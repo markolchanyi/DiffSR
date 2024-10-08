@@ -2,6 +2,8 @@ import os
 import torch
 from torch.optim import Adam
 from torch.nn import L1Loss
+
+sys.path.append('/autofs/space/nicc_003/users/olchanyi/DiffSR')
 from ResSR.generators import hr_lr_random_res_generator
 from ResSR.models import SRmodel
 
