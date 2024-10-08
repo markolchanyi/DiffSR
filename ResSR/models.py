@@ -29,7 +29,8 @@ class SRmodel(nn.Module):
 
         pad = (kernel_size // 2)
 
-        m_head = [nn.Conv3d(1, num_filters, kernel_size,  padding=pad)]
+        ## number of spherical harmonic coeffs
+        m_head = [nn.Conv3d(28, num_filters, kernel_size,  padding=pad)]
 
         m_body = []
         for _ in range(num_residual_blocks):
@@ -60,5 +61,3 @@ class SRmodel(nn.Module):
             x5 = x4
 
         return x5
-
-

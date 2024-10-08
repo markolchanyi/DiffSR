@@ -11,7 +11,7 @@ training_data_dir = '/autofs/space/panamint_005/users/iglesias/data/HCPunpacked/
 device_generator = 'cuda:0'
 # device_generator = 'cpu'
 device_training = 'cuda:0'
-num_filters = 64
+num_filters = 128
 num_residual_blocks = 16
 crop_size = 96
 kernel_size = 3
@@ -23,8 +23,8 @@ output_directory = '/autofs/space/panamint_001/users/iglesias/models_temp/ResSR_
 initial_model = None
 # noise_std_max=0.10
 noise_std_max=0.05
-lowres_min=2.0
-lowres_max=2.0
+lowres_min=1.5
+lowres_max=3.0
 
 # Create output directory if needed
 if os.path.exists(output_directory) is False:
@@ -83,5 +83,3 @@ for j in range(n_epochs - epoch_ini):
     }, '%s/checkpoint_%.4d.pth' % (output_directory, 1+epoch))
 
 print('Training complete!')
-
-

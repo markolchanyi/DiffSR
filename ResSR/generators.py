@@ -21,7 +21,7 @@ def hr_lr_random_res_generator(training_dir,
 
 
     # List images
-    image_list = glob.glob(training_dir + '/*gz')
+    image_list = glob.glob(os.path.join(training_dir, '*/fod.nii.gz'))
     n_training = len(image_list)
     print('Found %d cases for training' % n_training)
 
@@ -42,9 +42,12 @@ def hr_lr_random_res_generator(training_dir,
     while True:
         # randomly pick an image and read it
         index = np.random.randint(n_training)
-        hr, aff = load_volume(image_list[index])
-        hr = np.squeeze(hr)
-        orig_shape = hr.shape
+        hr, aff = load_volume(image_list[index])  # Load the FOD
+        hr = np.squeeze(hr)  # Ensure it's the correct shape (28, x, y, z)
+        orig_shape = hr.shape[:-1]  # Shape of the 3D volume (x, y, z)
+        if orig_shape != 28:
+            raise ValueError("Expected FOD with 28 channels (lmax=6), but got shape: {}".format(hr_fod.shape))
+
         orig_center = (np.array(orig_shape) - 1) / 2
         hr = torch.tensor(hr, device=device)
 
@@ -67,11 +70,18 @@ def hr_lr_random_res_generator(training_dir,
         xx2 = orig_center[0] + s * (R[0, 0] * xc + R[0, 1] * yc + R[0, 2] * zc) + hr_field[:,:,:,0] + t[0]
         yy2 = orig_center[1] + s * (R[1, 0] * xc + R[1, 1] * yc + R[1, 2] * zc) + hr_field[:,:,:,1] + t[1]
         zz2 = orig_center[2] + s * (R[2, 0] * xc + R[2, 1] * yc + R[2, 2] * zc) + hr_field[:,:,:,2] + t[2]
-        hr_def = fast_3D_interp_torch(hr, xx2, yy2, zz2, 'linear', device=device)
+
+        hr_def = torch.zeros_like(hr)
+        for c in range(hr.shape[-1]):  # Loop over each SH coef
+            hr_def[..., c] = fast_3D_interp_torch(hr[..., c], xx2, yy2, zz2, 'linear', device=device)
 
         # Add random bias field and gamma transform
         gamma = torch.exp(torch.tensor(gamma_std) * torch.randn([1], device=device))
-        hr_gamma = ((hr_def / torch.max(hr_def)) ** gamma)
+
+        hr_gamma = torch.zeros_like(hr_def)
+        for c in range(hr.shape[-1]):  # Loop over each SH coef
+            hr_gamma[...,c] = ((hr_gamma[...,c] / torch.max(hr_gamma[...,c])) ** gamma)
+
         npoints = np.random.randint(1 + bf_maxsize)
         if npoints==0:
             bias = torch.ones(1, device=device)
@@ -80,7 +90,10 @@ def hr_lr_random_res_generator(training_dir,
             lr_bf = stddev * torch.randn([npoints, npoints, npoints], device=device)
             factor = np.array(crop_size) / npoints
             bias = torch.exp(myzoom_torch(lr_bf, factor, device=device))
-        hr_bias = hr_gamma * bias
+
+        # Only apply to zeroth-order harmonic
+        hr_bias = hr_gamma.clone().detach()
+        hr_bias[...,0] = hr_gamma[...,0] * bias
 
         # Now simulate low resolution
         # The theoretical blurring sigma to blur the resolution depends on the fraction by which we want to
