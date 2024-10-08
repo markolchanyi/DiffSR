@@ -1,4 +1,5 @@
 import os
+import sys
 import torch
 from torch.optim import Adam
 from torch.nn import L1Loss
@@ -9,18 +10,18 @@ from ResSR.models import SRmodel
 
 
 # Parameters
-training_data_dir = '/autofs/space/panamint_005/users/iglesias/data/HCPunpacked/data/'
+training_data_dir = '/autofs/space/nicc_005/users/olchanyi/DiffSR/training_data/fod/'
 device_generator = 'cuda:0'
 # device_generator = 'cpu'
 device_training = 'cuda:0'
 num_filters = 128
 num_residual_blocks = 16
-crop_size = 96
+crop_size = 64
 kernel_size = 3
 use_global_residual = True
 n_epochs = 1000
 n_its_per_epoch = 100
-output_directory = '/autofs/space/panamint_001/users/iglesias/models_temp/ResSR_test_less_noise/'
+output_directory = '/autofs/space/nicc_005/users/olchanyi/DiffSR/model_outputs/'
 # initial_model = '/autofs/space/panamint_001/users/iglesias/models_temp/ResSR_test/checkpoint_0675.pth'
 initial_model = None
 # noise_std_max=0.10

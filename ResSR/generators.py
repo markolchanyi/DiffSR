@@ -1,4 +1,5 @@
 import glob
+import os
 import numpy as np
 import torch
 from ResSR.utils import load_volume, make_rotation_matrix, myzoom_torch, fast_3D_interp_torch, make_gaussian_kernel
@@ -45,11 +46,13 @@ def hr_lr_random_res_generator(training_dir,
         hr, aff = load_volume(image_list[index])  # Load the FOD
         hr = np.squeeze(hr)  # Ensure it's the correct shape (28, x, y, z)
         orig_shape = hr.shape[:-1]  # Shape of the 3D volume (x, y, z)
-        if orig_shape != 28:
-            raise ValueError("Expected FOD with 28 channels (lmax=6), but got shape: {}".format(hr_fod.shape))
+        if hr.shape[-1] != 28:
+            raise ValueError("Expected FOD with 28 channels (lmax=6), but got shape: {}".format(hr.shape))
 
         orig_center = (np.array(orig_shape) - 1) / 2
         hr = torch.tensor(hr, device=device)
+
+        print("orig shape: ", orig_shape)
 
         # Sample augmentation parameters
         rotations = (2 * rotation_bounds * np.random.rand(3) - rotation_bounds) / 180.0 * np.pi
