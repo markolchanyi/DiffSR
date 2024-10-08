@@ -52,8 +52,6 @@ def hr_lr_random_res_generator(training_dir,
         orig_center = (np.array(orig_shape) - 1) / 2
         hr = torch.tensor(hr, device=device)
 
-        print("orig shape: ", orig_shape)
-
         # Sample augmentation parameters
         rotations = (2 * rotation_bounds * np.random.rand(3) - rotation_bounds) / 180.0 * np.pi
         R = torch.tensor(make_rotation_matrix(rotations), device=device)
@@ -74,16 +72,16 @@ def hr_lr_random_res_generator(training_dir,
         yy2 = orig_center[1] + s * (R[1, 0] * xc + R[1, 1] * yc + R[1, 2] * zc) + hr_field[:,:,:,1] + t[1]
         zz2 = orig_center[2] + s * (R[2, 0] * xc + R[2, 1] * yc + R[2, 2] * zc) + hr_field[:,:,:,2] + t[2]
 
-        hr_def = torch.zeros_like(hr)
-        for c in range(hr.shape[-1]):  # Loop over each SH coef
-            hr_def[..., c] = fast_3D_interp_torch(hr[..., c], xx2, yy2, zz2, 'linear', device=device)
+        # multichannel (i.e., SH coeffs) ok
+        hr_def = fast_3D_interp_torch(hr, xx2, yy2, zz2, 'linear', device=device)
 
         # Add random bias field and gamma transform
+        # ONLY introduce these ops to the l=0 SH coeff
+        # since all higher-order coeffs are purely in angular domain
         gamma = torch.exp(torch.tensor(gamma_std) * torch.randn([1], device=device))
 
-        hr_gamma = torch.zeros_like(hr_def)
-        for c in range(hr.shape[-1]):  # Loop over each SH coef
-            hr_gamma[...,c] = ((hr_gamma[...,c] / torch.max(hr_gamma[...,c])) ** gamma)
+        hr_gamma = hr_def.detach().clone()
+        hr_gamma[...,0] = ((hr_gamma[...,0] / torch.max(hr_gamma[...,0])) ** gamma)
 
         npoints = np.random.randint(1 + bf_maxsize)
         if npoints==0:
@@ -95,7 +93,7 @@ def hr_lr_random_res_generator(training_dir,
             bias = torch.exp(myzoom_torch(lr_bf, factor, device=device))
 
         # Only apply to zeroth-order harmonic
-        hr_bias = hr_gamma.clone().detach()
+        hr_bias = hr_gamma.detach().clone()
         hr_bias[...,0] = hr_gamma[...,0] * bias
 
         # Now simulate low resolution
