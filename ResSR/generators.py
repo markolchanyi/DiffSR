@@ -100,16 +100,18 @@ def hr_lr_random_res_generator(training_dir,
         # The theoretical blurring sigma to blur the resolution depends on the fraction by which we want to
         # divide the power at the cutoff frequency. I use [0.45,0.85]
         blurred = hr_bias[None, None, :]
+
         ratios = lowres_min + (lowres_max - lowres_min) * np.random.rand(3)
         ratios = crop_size / (np.round(crop_size / ratios))  # we make sure that the ratios lead to an integer size
         for d in range(3):
             ratio = ratios[d]
-            blurred = blurred.permute([0,1,4,2,3])
+            blurred = blurred.permute([0,1,4,2,3,5]) # keep last SH dimension in-place
             if ratio>1:
                 fraction = 0.45 + 0.4 * np.random.rand(1)
                 sigma = fraction * ratio
                 kernel = torch.tensor(make_gaussian_kernel(sigma), dtype=torch.float32, device=device)[None, None, :, None, None]
-                blurred = torch.conv3d(blurred, kernel, stride=1, padding=[int((kernel.shape[2] - 1) / 2), 0, 0] )
+                for c in range(blurred.shape[-1]):
+                    blurred[...,c] = torch.conv3d(blurred[...,c], kernel, stride=1, padding=[int((kernel.shape[2] - 1) / 2), 0, 0] )
         blurred = torch.squeeze(blurred)
         lr = myzoom_torch(blurred, 1 / ratios, device=device)
 
@@ -123,7 +125,11 @@ def hr_lr_random_res_generator(training_dir,
         lr_noisy = lr_noisy / maxi
         target = hr_bias / maxi
 
+
         # Finally, we go back to the original resolution
         input = myzoom_torch(lr_noisy, ratios, device=device)
+
+        input = input.permute(3, 0, 1, 2)
+        target = target.permute(3, 0, 1, 2)
 
         yield input, target

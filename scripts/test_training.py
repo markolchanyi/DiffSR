@@ -63,8 +63,8 @@ for j in range(n_epochs - epoch_ini):
     for iteration in range(n_its_per_epoch):
 
         input, target = next(gen)
-        input = input[None, None, :].to(device_training)
-        target = target[None, None, :].to(device_training)
+        input = input[None, :].to(device_training)
+        target = target[None, :].to(device_training)
 
         pred = model(input)
         loss = loss_fn(pred, target)
