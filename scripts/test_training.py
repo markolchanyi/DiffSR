@@ -2,32 +2,33 @@ import os
 import sys
 import torch
 from torch.optim import Adam
-from torch.nn import L1Loss
+from torch.nn import L1Loss, MSELoss
+import torch.optim.lr_scheduler as lr_scheduler
 
 sys.path.append('/autofs/space/nicc_003/users/olchanyi/DiffSR')
 from ResSR.generators import hr_lr_random_res_generator
 from ResSR.models import SRmodel
-
+from ResSR.utils import mixed_loss
 
 # Parameters
-training_data_dir = '/autofs/space/nicc_005/users/olchanyi/DiffSR/training_data/fod/'
+training_data_dir = '/autofs/space/nicc_005/users/olchanyi/DiffSR/training_data_prerotated/fod/'
 device_generator = 'cuda:0'
 # device_generator = 'cpu'
 device_training = 'cuda:0'
-num_filters = 128
-num_residual_blocks = 16
+num_filters = 256
+num_residual_blocks = 24
 crop_size = 64
 kernel_size = 3
 use_global_residual = True
-n_epochs = 1000
+n_epochs = 2000
 n_its_per_epoch = 100
-output_directory = '/autofs/space/nicc_005/users/olchanyi/DiffSR/model_outputs/'
-# initial_model = '/autofs/space/panamint_001/users/iglesias/models_temp/ResSR_test/checkpoint_0675.pth'
-initial_model = None
+output_directory = '/autofs/space/nicc_005/users/olchanyi/DiffSR/model_outputs_v7/'
+initial_model = '/autofs/space/nicc_005/users/olchanyi/DiffSR/model_outputs_v6/checkpoint_0044.pth'
+#initial_model = None
 # noise_std_max=0.10
 noise_std_max=0.05
 lowres_min=1.5
-lowres_max=3.0
+lowres_max=3.5
 
 # Create output directory if needed
 if os.path.exists(output_directory) is False:
@@ -38,8 +39,14 @@ gen = hr_lr_random_res_generator(training_data_dir, crop_size=crop_size, device=
 
 # Prepare model
 model = SRmodel(num_filters, num_residual_blocks, kernel_size, use_global_residual).to(device_training)
-optimizer = Adam(model.parameters(), lr=1e-4)
-loss_fn = L1Loss()
+torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+optimizer = Adam(model.parameters(), lr=1e-3, weight_decay=5e-5)
+# Initialize scheduler
+#scheduler = lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.9, patience=5, verbose=True)
+scheduler = lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=50, T_mult=2, eta_min=1e-5)
+
+l1_loss_fn = L1Loss()
+l2_loss_fn = MSELoss()
 
 # Load weights if provided
 if initial_model is None:
@@ -67,7 +74,8 @@ for j in range(n_epochs - epoch_ini):
         target = target[None, :].to(device_training)
 
         pred = model(input)
-        loss = loss_fn(pred, target)
+        #loss = loss_fn(pred, target)
+        loss = mixed_loss(pred, target, l1_loss_fn, l2_loss_fn, alpha=0.5)
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
@@ -78,6 +86,9 @@ for j in range(n_epochs - epoch_ini):
         print('   Iteration ' + str(1+iteration) + ' of ' + str(n_its_per_epoch) + ', loss = ' + str(cumul_loss_epoch), end="\r")
 
     print('\n   End of epoch ' + str(epoch+1) + '; saving model... \n')
+
+    scheduler.step(cumul_loss_epoch)
+
     torch.save({
         'epoch': epoch,
         'model_state_dict': model.state_dict(),

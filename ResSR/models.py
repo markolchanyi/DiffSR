@@ -1,7 +1,27 @@
 import torch.nn as nn
+import torch
+
+class SEBlock(nn.Module):
+    def __init__(self, channels, reduction=8):
+        super(SEBlock, self).__init__()
+        self.avg_pool = nn.AdaptiveAvgPool3d(1)
+        self.fc = nn.Sequential(
+            nn.Linear(channels, channels // reduction, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Linear(channels // reduction, channels, bias=False),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x):
+        b, c, _, _, _ = x.size()
+        y = self.avg_pool(x).view(b, c)
+        y = self.fc(y).view(b, c, 1, 1, 1)
+        return x * y.expand_as(x)
+
+
 
 class ResBlock(nn.Module):
-    def __init__(self, num_filters, kernel_size, bias=True, bn=False, act=nn.ReLU(False), res_scale=0.1):
+    def __init__(self, num_filters, kernel_size, bias=True, bn=True, act=nn.ReLU(False), res_scale=0.1):
         super(ResBlock, self).__init__()
 
         pad = (kernel_size // 2)
@@ -15,12 +35,15 @@ class ResBlock(nn.Module):
                 m.append(act)
 
         self.body = nn.Sequential(*m)
+        self.se = SEBlock(num_filters)  # Add SE block after the residual block
         self.res_scale = res_scale
 
     def forward(self, x):
         res = self.body(x).mul(self.res_scale)
+        res = self.se(res)  # Pass through SE block
         x = x + res
         return x
+
 
 # Inspired by EDSR
 class SRmodel(nn.Module):

@@ -1,8 +1,9 @@
 import glob
 import os
 import numpy as np
+import nibabel as nib
 import torch
-from ResSR.utils import load_volume, make_rotation_matrix, myzoom_torch, fast_3D_interp_torch, make_gaussian_kernel
+from ResSR.utils import load_volume, make_rotation_matrix, myzoom_torch, fast_3D_interp_torch, make_gaussian_kernel, random_crop, random_rotate_sh, batch_rotate_sh
 
 
 def hr_lr_random_res_generator(training_dir,
@@ -44,6 +45,7 @@ def hr_lr_random_res_generator(training_dir,
         # randomly pick an image and read it
         index = np.random.randint(n_training)
         hr, aff = load_volume(image_list[index])  # Load the FOD
+        hr = hr.astype(float)
         hr = np.squeeze(hr)  # Ensure it's the correct shape (28, x, y, z)
         orig_shape = hr.shape[:-1]  # Shape of the 3D volume (x, y, z)
         if hr.shape[-1] != 28:
@@ -51,7 +53,14 @@ def hr_lr_random_res_generator(training_dir,
 
         orig_center = (np.array(orig_shape) - 1) / 2
         hr = torch.tensor(hr, device=device)
+        #print(f"Rotated FOD min: {hr.min()}, max: {hr.max()}, mean: {hr.mean()}")
+        # Replace NaNs, +inf, and -inf with 0
+        hr[torch.isnan(hr)] = 0.0
+        hr[torch.isinf(hr)] = 0.0
+        hr = torch.clamp(hr, min=-1, max=1)
 
+        #### OLD CODE without rotations of SH ####
+        '''
         # Sample augmentation parameters
         rotations = (2 * rotation_bounds * np.random.rand(3) - rotation_bounds) / 180.0 * np.pi
         R = torch.tensor(make_rotation_matrix(rotations), device=device)
@@ -71,16 +80,21 @@ def hr_lr_random_res_generator(training_dir,
         xx2 = orig_center[0] + s * (R[0, 0] * xc + R[0, 1] * yc + R[0, 2] * zc) + hr_field[:,:,:,0] + t[0]
         yy2 = orig_center[1] + s * (R[1, 0] * xc + R[1, 1] * yc + R[1, 2] * zc) + hr_field[:,:,:,1] + t[1]
         zz2 = orig_center[2] + s * (R[2, 0] * xc + R[2, 1] * yc + R[2, 2] * zc) + hr_field[:,:,:,2] + t[2]
+        '''
+        # random view cropping
+        hr_cropped = random_crop(hr, crop_size).float()
+
+        #hr_rot = batch_rotate_sh(hr_cropped,probability=1.0)
 
         # multichannel (i.e., SH coeffs) ok
-        hr_def = fast_3D_interp_torch(hr, xx2, yy2, zz2, 'linear', device=device)
+        #hr_def = fast_3D_interp_torch(hr, xx2, yy2, zz2, 'linear', device=device)
 
         # Add random bias field and gamma transform
         # ONLY introduce these ops to the l=0 SH coeff
         # since all higher-order coeffs are purely in angular domain
-        gamma = torch.exp(torch.tensor(gamma_std) * torch.randn([1], device=device))
+        gamma = torch.exp(torch.tensor(gamma_std) * torch.randn([1], device=device)).float()
 
-        hr_gamma = hr_def.detach().clone()
+        hr_gamma = hr_cropped.detach().clone()
         hr_gamma[...,0] = ((hr_gamma[...,0] / torch.max(hr_gamma[...,0])) ** gamma)
 
         npoints = np.random.randint(1 + bf_maxsize)
@@ -90,7 +104,7 @@ def hr_lr_random_res_generator(training_dir,
             stddev = bf_std_max * torch.rand([1], device=device)
             lr_bf = stddev * torch.randn([npoints, npoints, npoints], device=device)
             factor = np.array(crop_size) / npoints
-            bias = torch.exp(myzoom_torch(lr_bf, factor, device=device))
+            bias = torch.exp(myzoom_torch(lr_bf, factor, device=device)).float()
 
         # Only apply to zeroth-order harmonic
         hr_bias = hr_gamma.detach().clone()
@@ -99,7 +113,8 @@ def hr_lr_random_res_generator(training_dir,
         # Now simulate low resolution
         # The theoretical blurring sigma to blur the resolution depends on the fraction by which we want to
         # divide the power at the cutoff frequency. I use [0.45,0.85]
-        blurred = hr_bias[None, None, :]
+        hr_bias_clone = hr_bias.detach().clone()
+        blurred = hr_bias_clone[None, None, :]
 
         ratios = lowres_min + (lowres_max - lowres_min) * np.random.rand(3)
         ratios = crop_size / (np.round(crop_size / ratios))  # we make sure that the ratios lead to an integer size
@@ -121,13 +136,35 @@ def hr_lr_random_res_generator(training_dir,
 
         # We also renormalize here (as we do at test time!)
         # And also keep the target at the same scale
-        maxi = torch.max(lr_noisy)
-        lr_noisy = lr_noisy / maxi
-        target = hr_bias / maxi
-
+        #maxi = torch.max(lr_noisy)
+        #lr_noisy = lr_noisy / maxi
+        #target = hr_bias / maxi
+        target = hr_bias
 
         # Finally, we go back to the original resolution
         input = myzoom_torch(lr_noisy, ratios, device=device)
+
+        input = input.float()
+        target = target.float()
+
+        input[torch.isnan(input)] = 0.0
+        input[torch.isinf(input)] = 0.0
+        input[input < -1] = 0.0
+        input[input > 1] = 0.0
+        input = torch.clamp(input, min=-1, max=1)
+
+        target[torch.isnan(target)] = 0.0
+        target[torch.isinf(target)] = 0.0
+        target = torch.clamp(target, min=-1, max=1)
+
+        ##### TEST SAVE
+        #print("Saving intermediates...")
+        #os.makedirs("./tmp",exist_ok=True)
+        #input_npy = input.cpu().numpy()
+        #nib.save(nib.Nifti1Image(input_npy, affine=np.eye(4)), './tmp/input.nii.gz')
+        #target_npy = target.cpu().numpy()
+        #nib.save(nib.Nifti1Image(target_npy, affine=np.eye(4)), './tmp/target.nii.gz')
+        #####
 
         input = input.permute(3, 0, 1, 2)
         target = target.permute(3, 0, 1, 2)

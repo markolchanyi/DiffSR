@@ -24,7 +24,7 @@ def main():
     n_frames = args.frames
 
     # Constants
-    num_filters = 64
+    num_filters = 128
     num_residual_blocks = 16
     kernel_size = 3
     use_global_residual = True

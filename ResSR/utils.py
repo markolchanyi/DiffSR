@@ -4,8 +4,11 @@ import nibabel as nib
 import numpy as np
 import os
 import torch
+import math
+from torch.nn import L1Loss, MSELoss
 from scipy.interpolate import RegularGridInterpolator as rgi
 from scipy.ndimage import gaussian_filter as gauss_filt
+from scipy.special import lpmv
 
 # Load nifti or mgz file
 def load_volume(path_volume):
@@ -32,14 +35,14 @@ def save_volume(volume, aff, path):
 
 
 # Creates a 3x3 rotation matrix from a vector with 3 rotations about x, y, and z
-def make_rotation_matrix(rot):
+#def make_rotation_matrix(rot):
 
-    Rx = np.array([[1, 0, 0], [0, np.cos(rot[0]), -np.sin(rot[0])], [0, np.sin(rot[0]), np.cos(rot[0])]])
-    Ry = np.array([[np.cos(rot[1]), 0, np.sin(rot[1])], [0, 1, 0], [-np.sin(rot[1]), 0, np.cos(rot[1])]])
-    Rz = np.array([[np.cos(rot[2]), -np.sin(rot[2]), 0], [np.sin(rot[2]), np.cos(rot[2]), 0], [0, 0, 1]])
-    R = np.matmul(np.matmul(Rx, Ry), Rz)
+#    Rx = np.array([[1, 0, 0], [0, np.cos(rot[0]), -np.sin(rot[0])], [0, np.sin(rot[0]), np.cos(rot[0])]])
+#    Ry = np.array([[np.cos(rot[1]), 0, np.sin(rot[1])], [0, 1, 0], [-np.sin(rot[1]), 0, np.cos(rot[1])]])
+#    Rz = np.array([[np.cos(rot[2]), -np.sin(rot[2]), 0], [np.sin(rot[2]), np.cos(rot[2]), 0], [0, 0, 1]])
+#    R = np.matmul(np.matmul(Rx, Ry), Rz)
 
-    return R
+#    return R
 
 
 def myzoom_torch(X, factor, device='cpu'):
@@ -531,3 +534,295 @@ def rescale_voxel_size(volume, aff, new_vox_size):
     aff2[:-1, -1] = aff2[:-1, -1] - np.matmul(aff2[:-1, :-1], 0.5 * (factor - 1))
 
     return volume2, aff2
+
+
+def mixed_loss(pred, target, l1_loss_fn, l2_loss_fn, alpha=0.5):
+    l1_loss = l1_loss_fn(pred, target)
+    l2_loss = l2_loss_fn(pred, target)
+    return alpha * l1_loss + (1 - alpha) * l2_loss
+
+
+def random_crop(hr, crop_size):
+    # hr is expected to be of shape (N, N, N, C)
+    # only return a crop where majority of l=0 intensities are non-zero
+    # i.e., not the edge of the orig volume with no info
+    spatial_dims = hr.shape[:-1]
+    while True:
+        start = [torch.randint(0, spatial_dims[i] - crop_size[i], (1,)).item() for i in range(3)]
+        end = [start[i] + crop_size[i] for i in range(3)]
+
+        crop = hr[start[0]:end[0], start[1]:end[1], start[2]:end[2], :]
+        non_zero_fraction = (crop[..., 0] != 0).float().mean().item()
+
+        if non_zero_fraction > 0.5:
+            return crop
+
+def make_rotation_matrix(angles):
+    """
+    Generates a 3D rotation matrix from three rotation angles (x, y, z).
+    Args:
+    - angles: tensor of shape (3,) representing rotation angles in radians.
+    
+    Returns:
+    - Rotation matrix (3x3).
+    """
+    cos_x, cos_y, cos_z = torch.cos(angles)
+    sin_x, sin_y, sin_z = torch.sin(angles)
+    
+    Rx = torch.tensor([[1, 0, 0], 
+                       [0, cos_x, -sin_x], 
+                       [0, sin_x, cos_x]])
+
+    Ry = torch.tensor([[cos_y, 0, sin_y], 
+                       [0, 1, 0], 
+                       [-sin_y, 0, cos_y]])
+
+    Rz = torch.tensor([[cos_z, -sin_z, 0], 
+                       [sin_z, cos_z, 0], 
+                       [0, 0, 1]])
+
+    # Combine rotations (Rz * Ry * Rx)
+    R = torch.matmul(Rz, torch.matmul(Ry, Rx))
+    return R
+
+def wigner_d_matrix(l, beta):
+    """
+    Compute the Wigner d-matrix for spherical harmonics of degree l.
+
+    Args:
+    - l: Degree of the SH (integer).
+    - beta: Rotation angle (around the Y-axis) in radians.
+
+    Returns:
+    - d_matrix: Wigner d-matrix of shape (2l+1, 2l+1).
+    """
+    d_matrix = torch.zeros((2 * l + 1, 2 * l + 1), dtype=torch.float32)
+
+    for m in range(-l, l + 1):
+        for mp in range(-l, l + 1):
+            d_matrix[m + l, mp + l] = wigner_d_matrix_element(l, m, mp, beta)
+
+    return d_matrix
+
+def wigner_d_matrix_element(l, m, mp, beta):
+    """
+    Compute the Wigner d-matrix element for the given l, m, mp, and beta angle.
+    
+    Args:
+    - l: Degree of the spherical harmonic.
+    - m: Order of the spherical harmonic.
+    - mp: Order after rotation.
+    - beta: Euler angle (rotation around the Y-axis).
+    
+    Returns:
+    - d_l_m_mp: The Wigner small d-matrix element.
+    """
+    # Ensure m and mp are within the valid range for the degree l
+    if abs(m) > l or abs(mp) > l:
+        return 0
+
+    cos_beta = torch.cos(beta)
+    sin_beta = torch.sin(beta)
+
+    # Compute the element using a simplified form based on associated Legendre polynomials
+    pre_factor = math.sqrt(math.factorial(l + m) * math.factorial(l - m) *
+                           math.factorial(l + mp) * math.factorial(l - mp))
+    sum_term = 0
+
+    # Summation over k, part of the Wigner d-matrix formula
+    for k in range(max(0, m - mp), min(l - mp, l + m) + 1):
+        numerator = (-1)**k * binomial_coefficient(l + m, k) * binomial_coefficient(l - m, l - mp - k)
+        denominator = math.factorial(l - mp - k)
+        term = numerator / denominator * (cos_beta / 2)**(2 * l - 2 * k - m + mp) * (sin_beta / 2)**(m - mp)
+        sum_term += term
+
+    return pre_factor * sum_term
+
+def rotate_sh_vector(sh_coeffs, R, lmax=6):
+    """
+    Rotate SH coefficients according to a 3D rotation matrix.
+    
+    Args:
+    - sh_coeffs: Tensor of SH coefficients (C,) where C is the number of coefficients (e.g., 28 for lmax=6).
+    - R: Rotation matrix (3x3).
+    - lmax: Maximum SH degree (default is 6).
+    
+    Returns:
+    - rotated_sh_coeffs: Rotated SH coefficients of the same shape as input.
+    """
+    # Convert rotation matrix to Euler angles
+    alpha, beta, gamma = rotation_matrix_to_euler_angles(R)
+
+    device = sh_coeffs.device
+    dtype = torch.float32
+
+    R = R.to(device, dtype=dtype)
+
+    # Initialize rotated SH coefficients
+    rotated_sh_coeffs = torch.zeros_like(sh_coeffs, dtype=dtype, device=device)
+
+    # Index to keep track of SH coefficients
+    idx = 0
+
+    for l in range(0, lmax + 1, 2):  # Spherical harmonics are even orders only
+        D_l = wigner_d_matrix(l, beta).to(device, dtype=dtype)  # Get Wigner D-matrix for degree l
+        coeffs_l = sh_coeffs[idx:idx + (2 * l + 1)].to(device, dtype=dtype)  # Extract SH coefficients for degree l
+        rotated_coeffs_l = torch.matmul(D_l, coeffs_l)  # Rotate the SH coefficients using Wigner D-matrix
+        rotated_sh_coeffs[idx:idx + (2 * l + 1)] = rotated_coeffs_l  # Store the rotated coefficients
+        idx += (2 * l + 1)  # Move to the next set of SH coefficients
+
+    return rotated_sh_coeffs
+
+def binomial_coefficient(n, k):
+    """
+    Compute the binomial coefficient C(n, k) = n! / (k! * (n - k)!).
+    This is equivalent to math.comb(n, k) in Python 3.8+, but works in earlier versions.
+    
+    Args:
+    - n: The total number of items.
+    - k: The number of chosen items.
+    
+    Returns:
+    - The binomial coefficient.
+    """
+    if k < 0 or k > n:
+        return 0
+    if k == 0 or k == n:
+        return 1
+    k = min(k, n - k)  # Take advantage of symmetry
+    c = 1
+    for i in range(k):
+        c = c * (n - i) // (i + 1)
+    return c
+
+def rotation_matrix_to_euler_angles(R):
+    """
+    Convert a 3x3 rotation matrix to Euler angles (alpha, beta, gamma).
+    
+    Args:
+    - R: Rotation matrix (3x3).
+    
+    Returns:
+    - alpha, beta, gamma: Euler angles (in radians).
+    """
+    sy = torch.sqrt(R[0, 0] ** 2 + R[1, 0] ** 2)
+
+    singular = sy < 1e-6
+
+    if not singular:
+        alpha = torch.atan2(R[2, 1], R[2, 2])
+        beta = torch.atan2(-R[2, 0], sy)
+        gamma = torch.atan2(R[1, 0], R[0, 0])
+    else:
+        alpha = torch.atan2(-R[1, 2], R[1, 1])
+        beta = torch.atan2(-R[2, 0], sy)
+        gamma = 0
+
+    return alpha, beta, gamma
+
+def random_rotate_sh(hr, lmax=6, probability=0.8):
+    """
+    Randomly rotate spherical harmonic coefficients with a given probability.
+    
+    Args:
+    - hr: Tensor of shape (N, N, N, C), where C is the number of SH coefficients (e.g., 28).
+    - lmax: Maximum SH degree (default is 6).
+    - probability: Probability of applying the rotation.
+    
+    Returns:
+    - hr_rot: Tensor with rotated SH coefficients (same shape as hr).
+    """
+    if torch.rand(1).item() < probability:
+        # Generate random rotation angles
+        angles = torch.rand(3) * 2 * torch.pi  # Random angles in radians
+
+        # Create a 3D rotation matrix
+        R = make_rotation_matrix(angles)
+
+        # Rotate SH coefficients voxel by voxel
+        N = hr.shape[0]
+        C = hr.shape[-1]  # Number of SH coefficients
+        hr_rot = torch.zeros_like(hr, dtype=torch.complex64)
+
+        # Rotate each voxel's SH coefficients
+        for x in range(N):
+            for y in range(N):
+                print("rotating for y: ", y)
+                for z in range(N):
+                    sh_coeffs = hr[x, y, z, :]
+                    rotated_coeffs = rotate_sh_vector(sh_coeffs, R, lmax=lmax)
+                    hr_rot[x, y, z, :] = rotated_coeffs
+
+        return hr_rot
+
+    return hr  # Return the original hr if no rotation is applied
+
+
+def make_random_rotation_matrix():
+    """
+    Generate a random 3D rotation matrix using random Euler angles.
+    
+    Returns:
+    - R: A random 3x3 rotation matrix.
+    """
+    # Generate random Euler angles (alpha, beta, gamma) in radians
+    angles = torch.rand(3) * 2 * torch.pi  # Random angles in the range [0, 2*pi]
+    return make_rotation_matrix(angles)  # Generate the rotation matrix
+
+
+def batch_rotate_sh(hr, lmax=6, probability=1.0):
+    """
+    Apply random rotation to SH coefficients for the entire 3D volume according to a random 3D rotation matrix.
+
+    Args:
+    - hr: Tensor of SH coefficients with shape (N, N, N, C), where C is the number of SH coefficients (e.g., 28 for lmax=6).
+    - lmax: Maximum SH degree (default is 6).
+    - probability: Probability of applying the rotation (between 0 and 1).
+
+    Returns:
+    - hr_rot: The randomly rotated SH coefficients for the entire volume (same shape as input).
+    """
+    # Check if we should apply the rotation based on the probability
+    if torch.rand(1).item() < probability:
+        # Generate a random rotation matrix
+        R = make_random_rotation_matrix()
+
+        # Ensure the rotation matrix and SH coefficients are on the same device and are float32
+        device = hr.device
+        dtype = torch.float32
+        R = R.to(device, dtype=dtype)
+
+        # Convert rotation matrix to Euler angles
+        alpha, beta, gamma = rotation_matrix_to_euler_angles(R)
+
+        # Initialize the rotated SH coefficients volume (same shape as hr)
+        hr_rot = torch.zeros_like(hr, device=device, dtype=dtype)
+
+        # Iterate over SH degrees (even orders only)
+        idx = 0
+        for l in range(0, lmax + 1, 2):
+            # Get Wigner d-matrix for the current degree l
+            D_l = wigner_d_matrix(l, beta).to(device, dtype=dtype)
+
+            # Extract the SH coefficients for degree l for the entire volume (shape: (N, N, N, 2l+1))
+            coeffs_l = hr[:, :, :, idx:idx + (2 * l + 1)].to(device, dtype=dtype)
+
+            # Reshape the SH coefficients to (N*N*N, 2l+1) for batch processing
+            N = hr.shape[0]
+            coeffs_l = coeffs_l.reshape(-1, 2 * l + 1)  # Shape: (N*N*N, 2l+1)
+
+            # Apply Wigner D-matrix to all SH coefficients at once using batch matrix multiplication
+            rotated_coeffs_l = torch.matmul(coeffs_l, D_l.T)  # Shape: (N*N*N, 2l+1)
+
+            # Reshape back to the original volume shape (N, N, N, 2l+1)
+            rotated_coeffs_l = rotated_coeffs_l.reshape(N, N, N, 2 * l + 1)
+
+            # Store the rotated SH coefficients back in the hr_rot volume
+            hr_rot[:, :, :, idx:idx + (2 * l + 1)] = rotated_coeffs_l
+            idx += (2 * l + 1)
+
+        return hr_rot
+    
+    # If no rotation is applied, return the original SH tensor
+    return hr
+
