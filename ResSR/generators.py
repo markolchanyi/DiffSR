@@ -3,6 +3,7 @@ import os
 import numpy as np
 import nibabel as nib
 import torch
+import torch.nn.functional as F
 from ResSR.utils import load_volume, make_rotation_matrix, myzoom_torch, fast_3D_interp_torch, make_gaussian_kernel, random_crop, random_rotate_sh, batch_rotate_sh
 
 
@@ -72,7 +73,7 @@ def hr_lr_random_res_generator(training_dir,
             gamma = np.random.uniform(-rotation_bounds, rotation_bounds)
 
             os.makedirs('./tmp', exist_ok=True)
-            nib.save(nib.Nifti1Image(hr_cropped.cpu().numpy(), affine=aff, './tmp/sh_unrot.nii.gz'))
+            nib.save(nib.Nifti1Image(hr_cropped.cpu().numpy(), affine=aff), './tmp/sh_unrot.nii.gz')
             cmd = "python rotate_sh_standalone.py"
             cmd += " -i ./tmp/sh_unrot.nii.gz"
             cmd += " -o ./tmp/sh_rot.nii.gz"
