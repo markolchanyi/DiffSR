@@ -8,7 +8,7 @@ from ResSR.utils import load_volume, make_rotation_matrix, myzoom_torch, fast_3D
 
 def hr_lr_random_res_generator(training_dir,
                                crop_size=64,
-                               rotation_bounds=10,
+                               rotation_bounds=30,
                                scaling_bounds=0.15,
                                nonlin_maxsize=8,
                                nonlin_std_max=3.0,
@@ -19,7 +19,8 @@ def hr_lr_random_res_generator(training_dir,
                                bf_std_max=0.3,
                                noise_std_min=0.00,
                                noise_std_max=0.10,
-                               device='cpu'):
+                               device='cpu',
+                               njobs=1):
 
 
     # List images
@@ -59,35 +60,37 @@ def hr_lr_random_res_generator(training_dir,
         hr[torch.isinf(hr)] = 0.0
         hr = torch.clamp(hr, min=-1, max=1)
 
-        #### OLD CODE without rotations of SH ####
-        '''
-        # Sample augmentation parameters
-        rotations = (2 * rotation_bounds * np.random.rand(3) - rotation_bounds) / 180.0 * np.pi
-        R = torch.tensor(make_rotation_matrix(rotations), device=device)
-        s = torch.tensor(1 + (2 * scaling_bounds * np.random.rand(1) - scaling_bounds), device=device)
-        t = (np.random.rand(3) - 0.5) * (np.array(orig_shape) - np.array(crop_size))
-        npoints =  np.random.randint(1 + nonlin_maxsize)
-        if npoints==0:
-            hr_field = torch.zeros([1,1,1,3], device=device)
-        else:
-            stddev = nonlin_std_max * torch.rand([1], device=device)
-            lr_field = stddev * torch.randn([npoints, npoints, npoints, 3], device=device)
-            factor = np.array(crop_size) / npoints
-            hr_field = myzoom_torch(lr_field, factor, device=device)
-
-        # Interpolate!  There is no need to interpolate everywhere; only in the area we will (randomly) crop
-        # Essentially, we crop and interpolate at the same time
-        xx2 = orig_center[0] + s * (R[0, 0] * xc + R[0, 1] * yc + R[0, 2] * zc) + hr_field[:,:,:,0] + t[0]
-        yy2 = orig_center[1] + s * (R[1, 0] * xc + R[1, 1] * yc + R[1, 2] * zc) + hr_field[:,:,:,1] + t[1]
-        zz2 = orig_center[2] + s * (R[2, 0] * xc + R[2, 1] * yc + R[2, 2] * zc) + hr_field[:,:,:,2] + t[2]
-        '''
         # random view cropping
         hr_cropped = random_crop(hr, crop_size).float()
 
-        #hr_rot = batch_rotate_sh(hr_cropped,probability=1.0)
+        ##############################################
+                    # SH rotation #
+        ##############################################
+        if random.random() < 0.5:
+            alpha = np.random.uniform(-rotation_bounds, rotation_bounds)
+            beta = np.random.uniform(-rotation_bounds, rotation_bounds)
+            gamma = np.random.uniform(-rotation_bounds, rotation_bounds)
 
-        # multichannel (i.e., SH coeffs) ok
-        #hr_def = fast_3D_interp_torch(hr, xx2, yy2, zz2, 'linear', device=device)
+            os.makedirs('./tmp', exist_ok=True)
+            nib.save(nib.Nifti1Image(hr_cropped.cpu().numpy(), affine=aff, './tmp/sh_unrot.nii.gz')
+            cmd = "python rotate_sh_standalone.py"
+            cmd += " -i ./tmp/sh_unrot.nii.gz"
+            cmd += " -o ./tmp/sh_rot.nii.gz"
+            cmd += " --alpha " + str(alpha)
+            cmd += " --alpha " + str(beta)
+            cmd += " --gamma " + str(gamma)
+            cmd += " --n_jobs " + str(njobs)
+
+            os.system(cmd)
+            hr_rot, _ = load_volume('./tmp/sh_rot.nii.gz')
+            hr_rot = hr_rot.astype(float)
+            hr_rot = np.squeeze(hr_rot)
+            hr_rot = torch.tensor(hr_rot, device=device)
+            hr_rot[torch.isnan(hr_rot)] = 0.0
+            hr_rot[torch.isinf(hr_rot)] = 0.0
+            hr_rot = torch.clamp(hr_rot, min=-1, max=1)
+
+            hr_cropped=hr_rot
 
         # Add random bias field and gamma transform
         # ONLY introduce these ops to the l=0 SH coeff
