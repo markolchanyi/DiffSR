@@ -72,7 +72,7 @@ def hr_lr_random_res_generator(training_dir,
             gamma = np.random.uniform(-rotation_bounds, rotation_bounds)
 
             os.makedirs('./tmp', exist_ok=True)
-            nib.save(nib.Nifti1Image(hr_cropped.cpu().numpy(), affine=aff, './tmp/sh_unrot.nii.gz')
+            nib.save(nib.Nifti1Image(hr_cropped.cpu().numpy(), affine=aff, './tmp/sh_unrot.nii.gz'))
             cmd = "python rotate_sh_standalone.py"
             cmd += " -i ./tmp/sh_unrot.nii.gz"
             cmd += " -o ./tmp/sh_rot.nii.gz"
