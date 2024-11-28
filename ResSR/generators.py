@@ -3,7 +3,7 @@ import os
 import numpy as np
 import nibabel as nib
 import torch
-import torch.nn.functional as F
+import random
 from ResSR.utils import load_volume, make_rotation_matrix, myzoom_torch, fast_3D_interp_torch, make_gaussian_kernel, random_crop, random_rotate_sh, batch_rotate_sh
 
 
@@ -25,7 +25,7 @@ def hr_lr_random_res_generator(training_dir,
 
 
     # List images
-    image_list = glob.glob(os.path.join(training_dir, '*/fod.nii.gz'))
+    image_list = glob.glob(os.path.join(training_dir, '*/sh_coefficients_*.nii.gz'))
     n_training = len(image_list)
     print('Found %d cases for training' % n_training)
 

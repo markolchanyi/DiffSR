@@ -11,7 +11,7 @@ from ResSR.models import SRmodel
 from ResSR.utils import mixed_loss
 
 # Parameters
-training_data_dir = '/autofs/space/nicc_005/users/olchanyi/DiffSR/training_data_prerotated/fod/'
+training_data_dir = '/autofs/space/nicc_005/users/olchanyi/DiffSR/training_data_prerotated/sshell_sh/'
 device_generator = 'cuda:0'
 # device_generator = 'cpu'
 device_training = 'cuda:0'
