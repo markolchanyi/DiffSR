@@ -29,13 +29,14 @@ initial_model = None
 noise_std_max=0.08
 lowres_min=1.5
 lowres_max=3.5
+njobs = 64
 
 # Create output directory if needed
 if os.path.exists(output_directory) is False:
     os.mkdir(output_directory)
 
 # Prepare generator
-gen = hr_lr_random_res_generator(training_data_dir, crop_size=crop_size, device=device_generator, noise_std_max=noise_std_max, lowres_min=lowres_min, lowres_max=lowres_max)
+gen = hr_lr_random_res_generator(training_data_dir, crop_size=crop_size, device=device_generator, noise_std_max=noise_std_max, lowres_min=lowres_min, lowres_max=lowres_max, njobs=njobs)
 
 # Prepare model
 model = SRmodel(num_filters, num_residual_blocks, kernel_size, use_global_residual).to(device_training)
