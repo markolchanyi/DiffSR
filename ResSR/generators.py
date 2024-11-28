@@ -74,7 +74,7 @@ def hr_lr_random_res_generator(training_dir,
 
             os.makedirs('./tmp', exist_ok=True)
             nib.save(nib.Nifti1Image(hr_cropped.cpu().numpy(), affine=aff), './tmp/sh_unrot.nii.gz')
-            cmd = "python sh_rotation.py"
+            cmd = "python ../ResSR/sh_rotation.py"
             cmd += " -i ./tmp/sh_unrot.nii.gz"
             cmd += " -o ./tmp/sh_rot.nii.gz"
             cmd += " --alpha " + str(alpha)
