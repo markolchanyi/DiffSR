@@ -16,17 +16,17 @@ device_generator = 'cuda:0'
 # device_generator = 'cpu'
 device_training = 'cuda:0'
 num_filters = 256
-num_residual_blocks = 24
+num_residual_blocks = 16
 crop_size = 64
 kernel_size = 3
 use_global_residual = True
 n_epochs = 2000
 n_its_per_epoch = 100
-output_directory = '/autofs/space/nicc_005/users/olchanyi/DiffSR/model_outputs_v7/'
-initial_model = '/autofs/space/nicc_005/users/olchanyi/DiffSR/model_outputs_v6/checkpoint_0044.pth'
-#initial_model = None
+output_directory = '/autofs/space/nicc_005/users/olchanyi/DiffSR/model_outputs_v11_test/'
+#initial_model = '/autofs/space/nicc_005/users/olchanyi/DiffSR/model_outputs_v10/checkpoint_0073.pth'
+initial_model = None
 # noise_std_max=0.10
-noise_std_max=0.05
+noise_std_max=0.08
 lowres_min=1.5
 lowres_max=3.5
 
@@ -39,11 +39,10 @@ gen = hr_lr_random_res_generator(training_data_dir, crop_size=crop_size, device=
 
 # Prepare model
 model = SRmodel(num_filters, num_residual_blocks, kernel_size, use_global_residual).to(device_training)
-torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-optimizer = Adam(model.parameters(), lr=1e-3, weight_decay=5e-5)
+optimizer = Adam(model.parameters(), lr=2e-5, weight_decay=2e-6)
 # Initialize scheduler
 #scheduler = lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.9, patience=5, verbose=True)
-scheduler = lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=50, T_mult=2, eta_min=1e-5)
+scheduler = lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=20, T_mult=2, eta_min=1e-6)
 
 l1_loss_fn = L1Loss()
 l2_loss_fn = MSELoss()
@@ -75,9 +74,10 @@ for j in range(n_epochs - epoch_ini):
 
         pred = model(input)
         #loss = loss_fn(pred, target)
-        loss = mixed_loss(pred, target, l1_loss_fn, l2_loss_fn, alpha=0.5)
+        loss = mixed_loss(pred, target, l1_loss_fn, l2_loss_fn, alpha=0.1, beta=10.0)
         optimizer.zero_grad()
         loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
 
         loss_epoch_acc = loss_epoch_acc + loss.detach().cpu().numpy()
@@ -87,7 +87,8 @@ for j in range(n_epochs - epoch_ini):
 
     print('\n   End of epoch ' + str(epoch+1) + '; saving model... \n')
 
-    scheduler.step(cumul_loss_epoch)
+    #scheduler.step(cumul_loss_epoch)
+    scheduler.step()
 
     torch.save({
         'epoch': epoch,

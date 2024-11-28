@@ -536,9 +536,33 @@ def rescale_voxel_size(volume, aff, new_vox_size):
     return volume2, aff2
 
 
-def mixed_loss(pred, target, l1_loss_fn, l2_loss_fn, alpha=0.5):
+def gradient_loss(pred, target):
+    # Calculate gradient differences along spatial dimensions only (not the channel dimension)
+    grad_x_pred = pred[:, :, 1:, :, :] - pred[:, :, :-1, :, :]
+    grad_y_pred = pred[:, :, :, 1:, :] - pred[:, :, :, :-1, :]
+    grad_z_pred = pred[:, :, :, :, 1:] - pred[:, :, :, :, :-1]
+
+    grad_x_target = target[:, :, 1:, :, :] - target[:, :, :-1, :, :]
+    grad_y_target = target[:, :, :, 1:, :] - target[:, :, :, :-1, :]
+    grad_z_target = target[:, :, :, :, 1:] - target[:, :, :, :, :-1]
+
+    # Ensure the dimensions match before calculating the loss
+    grad_diff_x = (grad_x_pred - grad_x_target) ** 2
+    grad_diff_y = (grad_y_pred - grad_y_target) ** 2
+    grad_diff_z = (grad_z_pred - grad_z_target) ** 2
+
+    # Combine gradient differences
+    return (grad_diff_x.mean() + grad_diff_y.mean() + grad_diff_z.mean()) / 3
+
+
+
+def mixed_loss(pred, target, l1_loss_fn, l2_loss_fn, alpha=0.5, beta=0.1):
     l1_loss = l1_loss_fn(pred, target)
     l2_loss = l2_loss_fn(pred, target)
+    #grad_loss = gradient_loss(pred, target)
+    #print("L1: ", l1_loss)
+    #print("L2: ", l2_loss)
+    #print("Grad: ", grad_loss)
     return alpha * l1_loss + (1 - alpha) * l2_loss
 
 

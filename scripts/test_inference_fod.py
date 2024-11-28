@@ -28,7 +28,7 @@ def main():
 
     # Constants
     num_filters = 256
-    num_residual_blocks = 24
+    num_residual_blocks = 16
     kernel_size = 3
     use_global_residual = True
     ref_res = 1
