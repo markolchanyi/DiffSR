@@ -843,8 +843,8 @@ def batch_rotate_sh(hr, lmax=6, probability=1.0):
 
 def median_iqr_scaling(sh_tensor, l0_index=0, k=2.0, new_min=0.0, new_max=1.0, eps=1e-8):
     # Extract the l=0 channel
-    l0 = sh_tensor[:, l0_index]
-    print("shape of l0 tensor is: ", sh_tensor.shape)
+    l0 = sh_tensor[..., l0_index]
+    print("shape of l0 tensor is: ", l0.shape)
 
     # Compute median and IQR
     median = torch.mean(l0)
