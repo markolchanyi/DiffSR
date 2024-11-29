@@ -5,7 +5,7 @@ import nibabel as nib
 import torch
 import random
 from ResSR.utils import load_volume, make_rotation_matrix, myzoom_torch, fast_3D_interp_torch
-from ResSR.utils import make_gaussian_kernel, random_crop, random_rotate_sh, batch_rotate_sh, median_iqr_scaling
+from ResSR.utils import make_gaussian_kernel, random_crop, random_rotate_sh, batch_rotate_sh, percentile_scaling
 
 
 def hr_lr_random_res_generator(training_dir,
