@@ -128,7 +128,7 @@ def hr_lr_random_res_generator(training_dir,
         }
 
         # Randomly drop-out higher-order SH l's
-        prob_dropout = 0.95
+        prob_dropout = 0.45
         rand = random.random()
         print("HR SHAPE: ", hr_bias.shape)
         if rand < prob_dropout/2:
@@ -136,7 +136,7 @@ def hr_lr_random_res_generator(training_dir,
             hr_bias[...,sh_mapping[6]] = 0
         elif rand > 1-(prob_dropout/2):
             hr_bias[...,sh_mapping[6]] = 0
-        else
+        else:
             continue
 
         # Now simulate low resolution
