@@ -853,13 +853,13 @@ def percentile_scaling(sh_tensor, l0_index=0, k=2.0, new_min=0.0, new_max=1.0, t
     l0_filtered = l0[mask]
 
     # Compute lower and upper percentile values
-    lower_percentile=0.1
+    lower_percentile=0.05
     upper_percentile=98.0
     lower = torch.quantile(l0_filtered, torch.tensor(lower_percentile / 100.0, dtype=l0.dtype, device=l0.device))
     upper = torch.quantile(l0_filtered, torch.tensor(upper_percentile / 100.0, dtype=l0.dtype, device=l0.device))
 
-    print("upper bound: ", upper)
-    print("lower bound: ", lower)
+    #print("upper bound: ", upper)
+    #print("lower bound: ", lower)
 
     scaled_l0 = (l0 - lower) / (upper - lower)
     sh_tensor_normalized = sh_tensor.detach().clone()

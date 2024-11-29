@@ -228,9 +228,6 @@ if __name__ == '__main__':
 
     bulk_rotated_sh_coeffs_volume = np.zeros_like(complex_coeffs_volume)
 
-    ##### Bulk Affine Transformation for SH Coefficients #####
-    print("Starting bulk affine transformation for SH coefficients...")
-
     # Parallelize the bulk affine transform loop for SH rotation
     rotated_sh_channels = Parallel(n_jobs=n_jobs, backend="multiprocessing")(
         delayed(rotate_channel)(
@@ -246,11 +243,7 @@ if __name__ == '__main__':
 
     # End timing
     end_bulk = time.time()
-    print(f"Bulk rotation of SH coefficients completed in {end_bulk - start_bulk:.2f} seconds.")
-
 
     # Save the rotated volume data
     bulk_rotated_sh_coeffs_img = nib.Nifti1Image(bulk_rotated_sh_coeffs_volume, affine=affine)
     nib.save(bulk_rotated_sh_coeffs_img, output_file)
-
-    print("done!")

@@ -128,9 +128,8 @@ def hr_lr_random_res_generator(training_dir,
         }
 
         # Randomly drop-out higher-order SH l's
-        prob_dropout = 0.45
+        prob_dropout = 0.2
         rand = random.random()
-        print("HR SHAPE: ", hr_bias.shape)
         if rand < prob_dropout/2:
             hr_bias[...,sh_mapping[4]] = 0
             hr_bias[...,sh_mapping[6]] = 0
@@ -189,10 +188,10 @@ def hr_lr_random_res_generator(training_dir,
         ##### TEST SAVE
         #print("Saving intermediates...")
         #os.makedirs("./tmp",exist_ok=True)
-        input_npy = input.cpu().numpy()
-        nib.save(nib.Nifti1Image(input_npy, affine=np.eye(4)), './tmp/input.nii.gz')
-        target_npy = target.cpu().numpy()
-        nib.save(nib.Nifti1Image(target_npy, affine=np.eye(4)), './tmp/target.nii.gz')
+        #input_npy = input.cpu().numpy()
+        #nib.save(nib.Nifti1Image(input_npy, affine=np.eye(4)), './tmp/input.nii.gz')
+        #target_npy = target.cpu().numpy()
+        #nib.save(nib.Nifti1Image(target_npy, affine=np.eye(4)), './tmp/target.nii.gz')
         #####
 
         input = input.permute(3, 0, 1, 2)
