@@ -847,7 +847,8 @@ def median_iqr_scaling(sh_tensor, l0_index=0, k=2.0, new_min=0.0, new_max=1.0, e
 
     # Compute median and IQR
     median = torch.median(l0)
-    q75, q25 = torch.quantile(l0, torch.tensor([0.75, 0.25]))
+    q = torch.tensor([0.75, 0.25], dtype=l0.dtype, device=l0.device)
+    q75, q25 = torch.quantile(l0, q)
     iqr = q75 - q25
 
     # Debugging statements
