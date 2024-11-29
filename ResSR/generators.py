@@ -50,12 +50,16 @@ def hr_lr_random_res_generator(training_dir,
         hr, aff = load_volume(image_list[index])  # Load the FOD
         hr = hr.astype(float)
         hr = np.squeeze(hr)  # Ensure it's the correct shape (28, x, y, z)
+
+        print("shape of orig HR is: ", hr.shape)
         orig_shape = hr.shape[:-1]  # Shape of the 3D volume (x, y, z)
         if hr.shape[-1] != 28:
             raise ValueError("Expected FOD with 28 channels (lmax=6), but got shape: {}".format(hr.shape))
 
         orig_center = (np.array(orig_shape) - 1) / 2
         hr = torch.tensor(hr, device=device)
+
+        print("shape of HR tensor is: ", hr.shape)
         #print(f"Rotated FOD min: {hr.min()}, max: {hr.max()}, mean: {hr.mean()}")
         # Replace NaNs, +inf, and -inf with 0
         hr[torch.isnan(hr)] = 0.0
