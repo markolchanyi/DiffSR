@@ -841,39 +841,27 @@ def batch_rotate_sh(hr, lmax=6, probability=1.0):
     return hr
 
 
-def median_iqr_scaling(sh_tensor, l0_index=0, k=2.0, new_min=0.0, new_max=1.0, eps=1e-8):
+def percentile_scaling(sh_tensor, l0_index=0, k=2.0, new_min=0.0, new_max=1.0, threshold=0.01):
+    """
+    Scales the l=0 channel of the SH tensor to [new_min, new_max] based on specified percentiles,
+    considering only values greater than a specified threshold.
+    """
     # Extract the l=0 channel
     l0 = sh_tensor[..., l0_index]
-    print("shape of l0 tensor is: ", l0.shape)
 
-    # Compute median and IQR
-    median = torch.mean(l0)
-    q = torch.tensor([0.75, 0.25], dtype=l0.dtype, device=l0.device)
-    q75, q25 = torch.quantile(l0, q)
-    iqr = q75 - q25
+    mask = l0 > threshold
+    l0_filtered = l0[mask]
 
-    # Debugging statements
-    print(f"Median: {median.item():.4f}, IQR: {iqr.item():.4f}")
+    # Compute lower and upper percentile values
+    lower_percentile=1.0
+    upper_percentile=99.0
+    lower = torch.quantile(l0_filtered, torch.tensor(lower_percentile / 100.0, dtype=l0.dtype, device=l0.device))
+    upper = torch.quantile(l0_filtered, torch.tensor(upper_percentile / 100.0, dtype=l0.dtype, device=l0.device))
 
-    # Define scaling bounds based on median and IQR
-    lower_bound = median - k * iqr
-    upper_bound = median + k * iqr
+    print("upper bound: ", upper)
+    print("lower bound: ", lower)
 
-    print(f"Lower Bound: {lower_bound.item():.4f}, Upper Bound: {upper_bound.item():.4f}")
-
-    # Apply the scaling formula
-    if iqr < eps:
-        # If IQR is too small, set normalized l0 to 0.5 to avoid division by zero
-        l0_normalized = torch.full_like(l0, 0.5)
-        print("IQR is too small. Setting normalized l0 to 0.5.")
-    else:
-        # Scale the l0 channel
-        l0_normalized = (l0 - lower_bound) / (upper_bound - lower_bound)
-        # Shift to center around 0.5
-        l0_normalized = l0_normalized * (new_max - new_min) + new_min
-        l0_normalized = torch.clamp(l0_normalized, min=new_min, max=new_max)
-
-    sh_tensor_normalized = sh_tensor.clone()
-    sh_tensor_normalized[:, l0_index] = l0_normalized
+    scaled_l0 = (l0 - lower) / (upper - lower)
+    sh_tensor_normalized[..., l0_index] = scaled_l0
 
     return sh_tensor_normalized
