@@ -59,6 +59,9 @@ def hr_lr_random_res_generator(training_dir,
         # Replace NaNs, +inf, and -inf with 0
         hr[torch.isnan(hr)] = 0.0
         hr[torch.isinf(hr)] = 0.0
+
+        # IQR scale the l=0 isotropic component
+        hr = median_iqr_scaling(hr, l0_index=0, k=2.0, new_min=0.0, new_max=1.0)
         hr = torch.clamp(hr, min=-1, max=1)
 
         # random view cropping
@@ -74,6 +77,7 @@ def hr_lr_random_res_generator(training_dir,
 
             os.makedirs('./tmp', exist_ok=True)
             nib.save(nib.Nifti1Image(hr_cropped.cpu().numpy(), affine=aff), './tmp/sh_unrot.nii.gz')
+
             cmd = "python ../ResSR/sh_rotation.py"
             cmd += " -i ./tmp/sh_unrot.nii.gz"
             cmd += " -o ./tmp/sh_rot.nii.gz"
@@ -81,12 +85,12 @@ def hr_lr_random_res_generator(training_dir,
             cmd += " --alpha " + str(beta)
             cmd += " --gamma " + str(gamma)
             cmd += " --n_jobs " + str(njobs)
-
             os.system(cmd)
+
             hr_rot, _ = load_volume('./tmp/sh_rot.nii.gz')
             hr_rot = hr_rot.astype(float)
             hr_rot = np.squeeze(hr_rot)
-            hr_rot = torch.tensor(hr_rot, device=device)
+            hr_rot = torch.tensor(hr_rot, device=device).float()
             hr_rot[torch.isnan(hr_rot)] = 0.0
             hr_rot[torch.isinf(hr_rot)] = 0.0
             hr_rot = torch.clamp(hr_rot, min=-1, max=1)

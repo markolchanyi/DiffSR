@@ -34,16 +34,6 @@ def save_volume(volume, aff, path):
     nib.save(nifti, path)
 
 
-# Creates a 3x3 rotation matrix from a vector with 3 rotations about x, y, and z
-#def make_rotation_matrix(rot):
-
-#    Rx = np.array([[1, 0, 0], [0, np.cos(rot[0]), -np.sin(rot[0])], [0, np.sin(rot[0]), np.cos(rot[0])]])
-#    Ry = np.array([[np.cos(rot[1]), 0, np.sin(rot[1])], [0, 1, 0], [-np.sin(rot[1]), 0, np.cos(rot[1])]])
-#    Rz = np.array([[np.cos(rot[2]), -np.sin(rot[2]), 0], [np.sin(rot[2]), np.cos(rot[2]), 0], [0, 0, 1]])
-#    R = np.matmul(np.matmul(Rx, Ry), Rz)
-
-#    return R
-
 
 def myzoom_torch(X, factor, device='cpu'):
 
@@ -586,23 +576,23 @@ def make_rotation_matrix(angles):
     Generates a 3D rotation matrix from three rotation angles (x, y, z).
     Args:
     - angles: tensor of shape (3,) representing rotation angles in radians.
-    
+
     Returns:
     - Rotation matrix (3x3).
     """
     cos_x, cos_y, cos_z = torch.cos(angles)
     sin_x, sin_y, sin_z = torch.sin(angles)
-    
-    Rx = torch.tensor([[1, 0, 0], 
-                       [0, cos_x, -sin_x], 
+
+    Rx = torch.tensor([[1, 0, 0],
+                       [0, cos_x, -sin_x],
                        [0, sin_x, cos_x]])
 
-    Ry = torch.tensor([[cos_y, 0, sin_y], 
-                       [0, 1, 0], 
+    Ry = torch.tensor([[cos_y, 0, sin_y],
+                       [0, 1, 0],
                        [-sin_y, 0, cos_y]])
 
-    Rz = torch.tensor([[cos_z, -sin_z, 0], 
-                       [sin_z, cos_z, 0], 
+    Rz = torch.tensor([[cos_z, -sin_z, 0],
+                       [sin_z, cos_z, 0],
                        [0, 0, 1]])
 
     # Combine rotations (Rz * Ry * Rx)
@@ -631,13 +621,13 @@ def wigner_d_matrix(l, beta):
 def wigner_d_matrix_element(l, m, mp, beta):
     """
     Compute the Wigner d-matrix element for the given l, m, mp, and beta angle.
-    
+
     Args:
     - l: Degree of the spherical harmonic.
     - m: Order of the spherical harmonic.
     - mp: Order after rotation.
     - beta: Euler angle (rotation around the Y-axis).
-    
+
     Returns:
     - d_l_m_mp: The Wigner small d-matrix element.
     """
@@ -665,12 +655,12 @@ def wigner_d_matrix_element(l, m, mp, beta):
 def rotate_sh_vector(sh_coeffs, R, lmax=6):
     """
     Rotate SH coefficients according to a 3D rotation matrix.
-    
+
     Args:
     - sh_coeffs: Tensor of SH coefficients (C,) where C is the number of coefficients (e.g., 28 for lmax=6).
     - R: Rotation matrix (3x3).
     - lmax: Maximum SH degree (default is 6).
-    
+
     Returns:
     - rotated_sh_coeffs: Rotated SH coefficients of the same shape as input.
     """
@@ -701,11 +691,11 @@ def binomial_coefficient(n, k):
     """
     Compute the binomial coefficient C(n, k) = n! / (k! * (n - k)!).
     This is equivalent to math.comb(n, k) in Python 3.8+, but works in earlier versions.
-    
+
     Args:
     - n: The total number of items.
     - k: The number of chosen items.
-    
+
     Returns:
     - The binomial coefficient.
     """
@@ -722,10 +712,10 @@ def binomial_coefficient(n, k):
 def rotation_matrix_to_euler_angles(R):
     """
     Convert a 3x3 rotation matrix to Euler angles (alpha, beta, gamma).
-    
+
     Args:
     - R: Rotation matrix (3x3).
-    
+
     Returns:
     - alpha, beta, gamma: Euler angles (in radians).
     """
@@ -747,12 +737,12 @@ def rotation_matrix_to_euler_angles(R):
 def random_rotate_sh(hr, lmax=6, probability=0.8):
     """
     Randomly rotate spherical harmonic coefficients with a given probability.
-    
+
     Args:
     - hr: Tensor of shape (N, N, N, C), where C is the number of SH coefficients (e.g., 28).
     - lmax: Maximum SH degree (default is 6).
     - probability: Probability of applying the rotation.
-    
+
     Returns:
     - hr_rot: Tensor with rotated SH coefficients (same shape as hr).
     """
@@ -785,7 +775,7 @@ def random_rotate_sh(hr, lmax=6, probability=0.8):
 def make_random_rotation_matrix():
     """
     Generate a random 3D rotation matrix using random Euler angles.
-    
+
     Returns:
     - R: A random 3x3 rotation matrix.
     """
@@ -846,7 +836,42 @@ def batch_rotate_sh(hr, lmax=6, probability=1.0):
             idx += (2 * l + 1)
 
         return hr_rot
-    
+
     # If no rotation is applied, return the original SH tensor
     return hr
 
+
+def median_iqr_scaling(sh_tensor, l0_index=0, k=2.0, new_min=0.0, new_max=1.0, eps=1e-8):
+    # Extract the l=0 channel
+    l0 = sh_tensor[:, l0_index]
+
+    # Compute median and IQR
+    median = torch.median(l0)
+    q75, q25 = torch.quantile(l0, torch.tensor([0.75, 0.25]))
+    iqr = q75 - q25
+
+    # Debugging statements
+    print(f"Median: {median.item():.4f}, IQR: {iqr.item():.4f}")
+
+    # Define scaling bounds based on median and IQR
+    lower_bound = median - k * iqr
+    upper_bound = median + k * iqr
+
+    print(f"Lower Bound: {lower_bound.item():.4f}, Upper Bound: {upper_bound.item():.4f}")
+
+    # Apply the scaling formula
+    if iqr < eps:
+        # If IQR is too small, set normalized l0 to 0.5 to avoid division by zero
+        l0_normalized = torch.full_like(l0, 0.5)
+        print("IQR is too small. Setting normalized l0 to 0.5.")
+    else:
+        # Scale the l0 channel
+        l0_normalized = (l0 - lower_bound) / (upper_bound - lower_bound)
+        # Shift to center around 0.5
+        l0_normalized = l0_normalized * (new_max - new_min) + new_min
+        l0_normalized = torch.clamp(l0_normalized, min=new_min, max=new_max)
+
+    sh_tensor_normalized = sh_tensor.clone()
+    sh_tensor_normalized[:, l0_index] = l0_normalized
+
+    return sh_tensor_normalized
