@@ -136,7 +136,7 @@ def hr_lr_random_res_generator(training_dir,
         elif rand > 1-(prob_dropout/2):
             hr_bias[...,sh_mapping[6]] = 0
         else:
-            continue
+            pass
 
         # Now simulate low resolution
         # The theoretical blurring sigma to blur the resolution depends on the fraction by which we want to
