@@ -26,7 +26,7 @@ def hr_lr_random_res_generator(training_dir,
 
 
     # List images
-    image_list = glob.glob(os.path.join(training_dir, '*/sh_coefficients_*.nii.gz'))
+    image_list = glob.glob(os.path.join(training_dir, '*/sh_coefficients_b*_masked.nii.gz'))
     n_training = len(image_list)
     print('Found %d cases for training' % n_training)
 
@@ -120,6 +120,25 @@ def hr_lr_random_res_generator(training_dir,
         hr_bias = hr_gamma.detach().clone()
         hr_bias[...,0] = hr_gamma[...,0] * bias
 
+        sh_mapping = {
+            0: [0],
+            2: [1, 2, 3, 4, 5],
+            4: [6, 7, 8, 9, 10, 11, 12, 13, 14],
+            6: [15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27]
+        }
+
+        # Randomly drop-out higher-order SH l's
+        prob_dropout = 0.95
+        rand = random.random()
+        print("HR SHAPE: ", hr_bias.shape)
+        if rand < prob_dropout/2:
+            hr_bias[...,sh_mapping[4]] = 0
+            hr_bias[...,sh_mapping[6]] = 0
+        elif rand > 1-(prob_dropout/2):
+            hr_bias[...,sh_mapping[6]] = 0
+        else
+            continue
+
         # Now simulate low resolution
         # The theoretical blurring sigma to blur the resolution depends on the fraction by which we want to
         # divide the power at the cutoff frequency. I use [0.45,0.85]
@@ -170,10 +189,10 @@ def hr_lr_random_res_generator(training_dir,
         ##### TEST SAVE
         #print("Saving intermediates...")
         #os.makedirs("./tmp",exist_ok=True)
-        #input_npy = input.cpu().numpy()
-        #nib.save(nib.Nifti1Image(input_npy, affine=np.eye(4)), './tmp/input.nii.gz')
-        #target_npy = target.cpu().numpy()
-        #nib.save(nib.Nifti1Image(target_npy, affine=np.eye(4)), './tmp/target.nii.gz')
+        input_npy = input.cpu().numpy()
+        nib.save(nib.Nifti1Image(input_npy, affine=np.eye(4)), './tmp/input.nii.gz')
+        target_npy = target.cpu().numpy()
+        nib.save(nib.Nifti1Image(target_npy, affine=np.eye(4)), './tmp/target.nii.gz')
         #####
 
         input = input.permute(3, 0, 1, 2)
