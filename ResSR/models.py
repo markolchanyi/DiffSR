@@ -35,12 +35,12 @@ class ResBlock(nn.Module):
                 m.append(act)
 
         self.body = nn.Sequential(*m)
-        #self.se = SEBlock(num_filters)  # Add SE block after the residual block
+        self.se = SEBlock(num_filters)  # Add SE block after the residual block
         self.res_scale = res_scale
 
     def forward(self, x):
         res = self.body(x).mul(self.res_scale)
-        #res = self.se(res)  # Pass through SE block
+        res = self.se(res)  # Pass through SE block
         x = x + res
         return x
 

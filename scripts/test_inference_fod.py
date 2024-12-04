@@ -3,7 +3,7 @@ import sys
 
 sys.path.append('/autofs/space/nicc_003/users/olchanyi/DiffSR')
 from ResSR.models import SRmodel
-from ResSR.utils import load_volume, save_volume, align_volume_to_ref, myzoom_torch
+from ResSR.utils import load_volume, save_volume, align_volume_to_ref, myzoom_torch, percentile_scaling
 import numpy as np
 import argparse
 
@@ -31,7 +31,7 @@ def main():
     num_residual_blocks = 16
     kernel_size = 3
     use_global_residual = True
-    ref_res = 1
+    ref_res = 1.25
     n_channels = 28
 
     print('Preparing model and loading weights')
@@ -49,7 +49,13 @@ def main():
     #if nc > n_frames:
     #    nc = n_frames
 
-    image_torch = torch.tensor(image2.copy(), device=device)
+    image_torch = torch.tensor(image2.copy(), device=device).float()
+    print("performing percentile scaling...")
+    image_torch = percentile_scaling(image_torch, l0_index=0, k=2.0, new_min=0.0, new_max=1.0, threshold=0.01)
+    image_torch[torch.isnan(image_torch)] = 0.0
+    image_torch[torch.isinf(image_torch)] = 0.0
+    image_torch = torch.clamp(image_torch, min=-1, max=1)
+    print("done")
     #maxis = torch.zeros(n_channels)
     #for c in range(n_channels):
     #    maxis[c] = torch.max(image_torch[:, :, :, c])
@@ -59,7 +65,7 @@ def main():
     voxsize = np.sqrt(np.sum(aff2 ** 2, axis=0))[:-1]
     print("found voxel size: ", voxsize)
     #voxsize = 1
-    factors = (voxsize / ref_res).astype(int)
+    factors = (voxsize / ref_res)
     upscaled = myzoom_torch(image_torch, factors, device=device)
     #if len(upscaled.shape) == 3:
     #    upscaled = upscaled[..., np.newaxis]
@@ -90,8 +96,9 @@ def main():
     #    pred[:,:,:,c] = pred[:,:,:,c] * maxis[c]
 
     print('\nSaving to disk')
+    print("Mean is: ", np.mean(pred.detach().cpu().numpy()))
     save_volume(pred.detach().cpu().numpy(), aff_upscaled, output_file)
-    save_volume(upscaled_unpermuted.detach().cpu().numpy(), aff_upscaled, upscaled_file)
+    #save_volume(upscaled_unpermuted.detach().cpu().numpy(), aff_upscaled, upscaled_file)
 
     print('All done')
     print('freeview ' + input_file + ' ' + upscaled_file + ' ' + output_file)

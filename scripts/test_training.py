@@ -22,11 +22,10 @@ kernel_size = 3
 use_global_residual = True
 n_epochs = 2000
 n_its_per_epoch = 100
-output_directory = '/autofs/space/nicc_005/users/olchanyi/DiffSR/model_outputs_v11_test/'
-#initial_model = '/autofs/space/nicc_005/users/olchanyi/DiffSR/model_outputs_v10/checkpoint_0073.pth'
-initial_model = None
+output_directory = '/autofs/space/nicc_005/users/olchanyi/DiffSR/model_outputs_v14/'
+initial_model = '/autofs/space/nicc_005/users/olchanyi/DiffSR/model_outputs_v13/checkpoint_0055.pth'
 # noise_std_max=0.10
-noise_std_max=0.08
+noise_std_max=0.02
 lowres_min=1.5
 lowres_max=3.5
 njobs = 64
@@ -75,7 +74,7 @@ for j in range(n_epochs - epoch_ini):
 
         pred = model(input)
         #loss = loss_fn(pred, target)
-        loss = mixed_loss(pred, target, l1_loss_fn, l2_loss_fn, alpha=0.1, beta=10.0)
+        loss = mixed_loss(pred, target, l1_loss_fn, l2_loss_fn, alpha=0.5, beta=10.0)
         optimizer.zero_grad()
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)

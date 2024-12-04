@@ -10,7 +10,7 @@ from ResSR.utils import make_gaussian_kernel, random_crop, random_rotate_sh, bat
 
 def hr_lr_random_res_generator(training_dir,
                                crop_size=64,
-                               rotation_bounds=30,
+                               rotation_bounds=20,
                                scaling_bounds=0.15,
                                nonlin_maxsize=8,
                                nonlin_std_max=3.0,
