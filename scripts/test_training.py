@@ -1,6 +1,7 @@
 import os
 import sys
 import torch
+import nibabel as nib
 from torch.optim import Adam
 from torch.nn import L1Loss, MSELoss
 import torch.optim.lr_scheduler as lr_scheduler
@@ -16,18 +17,17 @@ device_generator = 'cuda:0'
 # device_generator = 'cpu'
 device_training = 'cuda:0'
 num_filters = 256
-num_residual_blocks = 16
-crop_size = 64
+num_residual_blocks = 24
+crop_size = 48
 kernel_size = 3
 use_global_residual = True
 n_epochs = 2000
 n_its_per_epoch = 100
-output_directory = '/autofs/space/nicc_005/users/olchanyi/DiffSR/model_outputs_v14/'
-initial_model = '/autofs/space/nicc_005/users/olchanyi/DiffSR/model_outputs_v13/checkpoint_0055.pth'
-# noise_std_max=0.10
-noise_std_max=0.02
+output_directory = '/autofs/space/nicc_005/users/olchanyi/DiffSR/model_outputs_v38/'
+initial_model = '/autofs/space/nicc_005/users/olchanyi/DiffSR/model_outputs_v36/checkpoint_0230.pth'
+noise_std_max=0.04
 lowres_min=1.5
-lowres_max=3.5
+lowres_max=3
 njobs = 64
 
 # Create output directory if needed
@@ -39,10 +39,10 @@ gen = hr_lr_random_res_generator(training_data_dir, crop_size=crop_size, device=
 
 # Prepare model
 model = SRmodel(num_filters, num_residual_blocks, kernel_size, use_global_residual).to(device_training)
-optimizer = Adam(model.parameters(), lr=2e-5, weight_decay=2e-6)
+optimizer = Adam(model.parameters(), lr=1e-4, weight_decay=1e-6)
+
 # Initialize scheduler
-#scheduler = lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.9, patience=5, verbose=True)
-scheduler = lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=20, T_mult=2, eta_min=1e-6)
+scheduler = lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=50, T_mult=2, eta_min=1e-6)
 
 l1_loss_fn = L1Loss()
 l2_loss_fn = MSELoss()
@@ -66,24 +66,36 @@ for j in range(n_epochs - epoch_ini):
     print('Epoch ' + str(epoch+1) + ' of ' + str(n_epochs))
     loss_epoch_acc = 0.0
 
+    loss_epoch_acc_l1 = 0.0
+    loss_epoch_acc_l2 = 0.0
+    loss_epoch_acc_grad = 0.0
+
     for iteration in range(n_its_per_epoch):
 
         input, target = next(gen)
+
         input = input[None, :].to(device_training)
         target = target[None, :].to(device_training)
 
         pred = model(input)
         #loss = loss_fn(pred, target)
-        loss = mixed_loss(pred, target, l1_loss_fn, l2_loss_fn, alpha=0.5, beta=10.0)
+        loss, l1_loss, l2_loss = mixed_loss(pred, target, l1_loss_fn, l2_loss_fn, alpha=0.005, beta=1, multiplier=10000, l0_multiplier=5.0)
         optimizer.zero_grad()
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        #torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
 
         loss_epoch_acc = loss_epoch_acc + loss.detach().cpu().numpy()
         cumul_loss_epoch = loss_epoch_acc / (iteration + 1)
 
-        print('   Iteration ' + str(1+iteration) + ' of ' + str(n_its_per_epoch) + ', loss = ' + str(cumul_loss_epoch), end="\r")
+        loss_epoch_acc_l1 = loss_epoch_acc_l1 + l1_loss.detach().cpu().numpy()
+        cumul_loss_epoch_l1 = loss_epoch_acc_l1 / (iteration + 1)
+        loss_epoch_acc_l2 = loss_epoch_acc_l2 + l2_loss.detach().cpu().numpy()
+        cumul_loss_epoch_l2 = loss_epoch_acc_l2 / (iteration + 1)
+        #loss_epoch_acc_grad = loss_epoch_acc_grad + grad_loss.detach().cpu().numpy()
+        #cumul_loss_epoch_grad = loss_epoch_acc_grad / (iteration + 1)
+
+        print('   Iteration ' + str(1+iteration) + ' of ' + str(n_its_per_epoch) + ', tot loss = ' + str(cumul_loss_epoch) + ', l1: ' + str(cumul_loss_epoch_l1) + ', l2: ' + str(cumul_loss_epoch_l2), end="\r")
 
     print('\n   End of epoch ' + str(epoch+1) + '; saving model... \n')
 

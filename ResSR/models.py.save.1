@@ -1,0 +1,93 @@
+import torch.nn as nn
+import torch
+
+class SEBlock(nn.Module):
+    def __init__(self, channels, reduction=8):
+        super(SEBlock, self).__init__()
+        self.avg_pool = nn.AdaptiveAvgPool3d(1)
+        self.fc = nn.Sequential(
+            nn.Linear(channels, channels // reduction, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Linear(channels // reduction, channels, bias=False),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x):
+        b, c, _, _, _ = x.size()
+        y = self.avg_pool(x).view(b, c)
+        y = self.fc(y).view(b, c, 1, 1, 1)
+        return x * y.expand_as(x)
+
+
+
+class ResBlock(nn.Module):
+    def __init__(self, num_filters, kernel_size, bias=True, bn=False, act=nn.ELU(alpha=1.0, inplace=False), res_scale=0.1):
+        super(ResBlock, self).__init__()
+
+        pad = (kernel_size // 2)
+        m = []
+
+        for i in range(2):
+            m.append(nn.Conv3d(num_filters, num_filters, kernel_size, bias=bias, padding=pad))
+            if bn:
+                m.append(nn.BatchNorm3d(num_filters))
+            if i == 0:
+                m.append(act)
+
+        self.body = nn.Sequential(*m)
+        self.se = SEBlock(num_filters)  # Add SE block after the residual block
+        self.res_scale = res_scale
+
+    def forward(self, x):
+        res = self.body(x).mul(self.res_scale)
+        res = self.se(res)  # Pass through SE block
+        x = x + res
+        return x
+
+
+# Inspired by EDSR
+class SRmodel(nn.Module):
+    def __init__(self, num_filters, num_residual_blocks, kernel_size, use_global_residual=False):
+        super().__init__()
+
+        pad = (kernel_size // 2)
+
+        ## number of spherical harmonic coeffs
+        m_head = [nn.Conv3d(28, num_filters, kernel_size,  padding=pad)]
+
+        m_body = []
+        for _ in range(num_residual_blocks):
+            m_body.append(ResBlock(num_filters, kernel_size))
+        m_body.append(nn.Conv3d(num_filters, num_filters, kernel_size,  padding=pad))
+
+
+        # define tail module
+        m_tail = [
+            nn.Conv3d(num_filters, 28, kernel_size, padding=pad)
+        ]
+
+        self.head = nn.Sequential(*m_head)
+        self.body = nn.Sequential(*m_body)
+        self.tail = nn.Sequential(*m_tail)
+        self.use_global_residual = use_global_residual
+
+
+    def forward(self, x):
+
+        x2 = self.head(x)
+        res = self.body(x2)
+        x3 = x2 + res
+        x4 = self.tail(x3)
+        if self.use_global_residual:
+            x5 = x4 + x
+        else:
+            x5 = x4
+
+        ##### ReLU addition for l0
+        #l0_channel = x5[:, 0:1, :, :, :]  #l=0 channel
+        #ho_channels = x5[:, 1:, :, :, :]  # Extract higher-order channels
+        #l0_channel = nn.ReLU(inplace=False)(l0_channel)
+        #x5 = torch.cat((l0_channel, ho_channels), dim=1)
+        #####
+
+        return x5

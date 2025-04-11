@@ -546,14 +546,32 @@ def gradient_loss(pred, target):
 
 
 
-def mixed_loss(pred, target, l1_loss_fn, l2_loss_fn, alpha=0.5, beta=0.1):
-    l1_loss = l1_loss_fn(pred, target)
-    l2_loss = l2_loss_fn(pred, target)
-    #grad_loss = gradient_loss(pred, target)
-    #print("L1: ", l1_loss)
-    #print("L2: ", l2_loss)
-    #print("Grad: ", grad_loss)
-    return alpha * l1_loss + (1 - alpha) * l2_loss
+def mixed_loss(pred, target, l1_loss_fn, l2_loss_fn, alpha=0.5, beta=0.1, multiplier=1.0, l0_multiplier=None):
+
+    if l0_multiplier is None:
+        l1_loss = l1_loss_fn(pred, target)
+        #l2_loss_l0 = l2_loss_fn(pred[:,0:1,...], target[:,0:1,...])
+        #l2_loss_l1 = l2_loss_fn(pred[:,1:6,...], target[:,1:6,...])
+        #print("L2 loss l0: ", l2_loss_l0)
+        #print("L2 loss l1: ", l2_loss_l1)
+        #print(" ")
+        l2_loss = l2_loss_fn(pred, target)
+        #print("L2 loss: ", l2_loss)
+        #grad_loss = gradient_loss(pred, target)
+    else:
+        l1_loss_l0 = l1_loss_fn(pred[:,0:1,...], target[:,0:1,...])
+        #print("L1 loss 0: ", l1_loss_l0)
+        l2_loss_l0 = l2_loss_fn(pred[:,0:1,...], target[:,0:1,...])
+        l1_loss_other = l1_loss_fn(pred[:,1:,...], target[:,1:,...])
+        #print("L1 loss 1+: ", l1_loss_other)
+        l2_loss_other = l2_loss_fn(pred[:,1:,...], target[:,1:,...])
+        #print("SHAPE: ", target.shape[1])
+        l1_loss = ((l1_loss_l0 * (l0_multiplier/(target.shape[1]-1))) + l1_loss_other)/2
+        l2_loss = ((l2_loss_l0 * (l0_multiplier/(target.shape[1]-1))) + l2_loss_other)/2
+
+    tot_loss = (alpha * l1_loss + (1 - alpha) * l2_loss) * multiplier
+
+    return tot_loss, alpha * l1_loss, (1-alpha) * l2_loss
 
 
 def random_crop(hr, crop_size):
@@ -841,28 +859,106 @@ def batch_rotate_sh(hr, lmax=6, probability=1.0):
     return hr
 
 
-def percentile_scaling(sh_tensor, l0_index=0, k=2.0, new_min=0.0, new_max=1.0, threshold=0.01):
+def percentile_scaling(sh_tensor, l0_index=0, k=2.0, new_min=-1.0, new_max=1.0, threshold=0.001):
     """
     Scales the l=0 channel of the SH tensor to [new_min, new_max] based on specified percentiles,
     considering only values greater than a specified threshold.
     """
     # Extract the l=0 channel
     l0 = sh_tensor[..., l0_index]
+    l2 = sh_tensor[..., 1:6] # normalize to l2 coeffs as to avoid l0 dominance
 
-    mask = l0 > threshold
-    l0_filtered = l0[mask]
+    mask_l0 = l0 > threshold
+    l0_filtered = l0[mask_l0]
 
     # Compute lower and upper percentile values
-    lower_percentile=0.05
-    upper_percentile=98.0
-    lower = torch.quantile(l0_filtered, torch.tensor(lower_percentile / 100.0, dtype=l0.dtype, device=l0.device))
-    upper = torch.quantile(l0_filtered, torch.tensor(upper_percentile / 100.0, dtype=l0.dtype, device=l0.device))
+    lower_percentile_l0=1.0
+    upper_percentile_l0=99.0
+    lower_percentile_l2=1.0
+    upper_percentile_l2=99.0
 
-    #print("upper bound: ", upper)
-    #print("lower bound: ", lower)
+    lower_l2 = torch.quantile(l2, torch.tensor(lower_percentile_l2 / 100.0, dtype=l2.dtype, device=l2.device))
+    upper_l2 = torch.quantile(l2, torch.tensor(upper_percentile_l2 / 100.0, dtype=l2.dtype, device=l2.device))
+    lower_l0 = torch.quantile(l0_filtered, torch.tensor(lower_percentile_l0 / 100.0, dtype=l0.dtype, device=l0.device))
+    upper_l0 = torch.quantile(l0_filtered, torch.tensor(upper_percentile_l0 / 100.0, dtype=l0.dtype, device=l0.device))
 
-    scaled_l0 = (l0 - lower) / (upper - lower)
+    #print("l0 bounds: ", upper_l0, " ", lower_l0)
+    #print("l2 bounds: ", upper_l2, " ", lower_l2)
+
+    l0_median = torch.mean(l0_filtered)
+    #print("l0 mean: ", l0_median)
+
+    # add the *2 in order to keep the same "positibe" range as l/=0 coeffs
+    scaled_l0 = ((l0 - l0_median)*(upper_l2 - lower_l2))/(upper_l0 - lower_l0)
+    scaled_l0 = torch.clamp(scaled_l0, min=new_min, max=new_max)
     sh_tensor_normalized = sh_tensor.detach().clone()
     sh_tensor_normalized[..., l0_index] = scaled_l0
 
     return sh_tensor_normalized
+
+
+def sh_norm(sh_tensor, l0_index=0):
+    """
+    Scales the l=0 channel of the SH tensor to [new_min, new_max] based on specified percentiles,
+    considering only values greater than a specified threshold.
+    """
+    # Extract the l=0 channel and l2 channels
+    # norm factor for l>0 will be w.r.t. l2 coeffs for consistancy
+    l0 = sh_tensor[..., l0_index]
+    l2 = sh_tensor[..., 1:6]
+
+    mask_l0 = (l0 > 0.000001)
+
+    l0_filtered = l0[mask_l0]
+    l2_filtered = l2[mask_l0]
+
+
+    l2_std = torch.std(l2_filtered)
+    log_l0_mean = torch.mean(torch.log(l0_filtered))
+    log_l0_std = torch.std(torch.log(l0_filtered))
+    l0_std = (torch.exp(log_l0_std**2) - 1)*(torch.exp(2*log_l0_mean + log_l0_std**2))
+
+    #print("l2 std: ", l2_std)
+    #print("log l0 mean: ", log_l0_mean)
+    #print("log l0 std: ", log_l0_std)
+
+    # assume norm and log norm for distributions of l0/l2+
+    # assume zero mean for l2+ (empirirically true)
+    l2_scale = 1/(15*l2_std)
+    l0_scale = 1/(15*torch.sqrt(l0_std))
+
+    sh_tensor_normalized = sh_tensor.detach().clone()
+    sh_tensor_normalized[..., l0_index] = sh_tensor_normalized[..., l0_index]*l0_scale
+    sh_tensor_normalized[..., 1:] = sh_tensor_normalized[..., 1:]*l2_scale
+
+    return sh_tensor_normalized
+
+
+
+def rand_lowrank_mix(S, rank=8, scale=0.02):
+
+    S = S.contiguous()
+
+    device = S.device
+    X, Y, Z, C = S.shape
+
+    # Make a small random factorization: M = U * V, where U: (C, rank), V: (rank, C)
+    # We can then scale the resulting matrix to keep changes moderate.
+    U = torch.randn(C, rank, device=device)
+    V = torch.randn(rank, C, device=device)
+    M = (U @ V) * scale
+
+    # Optionally add identity so that we have some "base" pass-through + small mixing
+    M = torch.eye(C, device=device) + M
+
+    # Flatten S to [N, C] where N = X*Y*Z
+    S_flat = S.view(-1, C)
+    # Multiply by M => shape [N, C]
+    S_mixed_flat = S_flat @ M
+
+    # hacky way to keep the brain mask
+    rough_mask = (S[..., 1:6] == 0).all(dim=-1)
+    S_mixed = S_mixed_flat.view(X, Y, Z, C)
+    S_mixed[rough_mask] = 0
+    # Reshape back
+    return S_mixed_flat.view(X, Y, Z, C)

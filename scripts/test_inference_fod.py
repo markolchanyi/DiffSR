@@ -3,7 +3,7 @@ import sys
 
 sys.path.append('/autofs/space/nicc_003/users/olchanyi/DiffSR')
 from ResSR.models import SRmodel
-from ResSR.utils import load_volume, save_volume, align_volume_to_ref, myzoom_torch, percentile_scaling
+from ResSR.utils import load_volume, save_volume, align_volume_to_ref, myzoom_torch, percentile_scaling, sh_norm
 import numpy as np
 import argparse
 
@@ -28,7 +28,7 @@ def main():
 
     # Constants
     num_filters = 256
-    num_residual_blocks = 16
+    num_residual_blocks = 24
     kernel_size = 3
     use_global_residual = True
     ref_res = 1.25
@@ -42,33 +42,25 @@ def main():
     print('Loading input volume and normalizing to [0,1]')
     image, aff = load_volume(input_file)
     image = image.astype(float)
+
     image2, aff2 = align_volume_to_ref(image, aff, aff_ref=np.eye(4), return_aff=True, n_dims=3)
-    #if len(image2.shape) == 3:
-    #    image2 = image2[..., np.newaxis]
-    #nc = image2.shape[3]
-    #if nc > n_frames:
-    #    nc = n_frames
+
 
     image_torch = torch.tensor(image2.copy(), device=device).float()
     print("performing percentile scaling...")
-    image_torch = percentile_scaling(image_torch, l0_index=0, k=2.0, new_min=0.0, new_max=1.0, threshold=0.01)
+    image_torch = sh_norm(image_torch, l0_index=0)
     image_torch[torch.isnan(image_torch)] = 0.0
     image_torch[torch.isinf(image_torch)] = 0.0
     image_torch = torch.clamp(image_torch, min=-1, max=1)
     print("done")
-    #maxis = torch.zeros(n_channels)
-    #for c in range(n_channels):
-    #    maxis[c] = torch.max(image_torch[:, :, :, c])
-    #    image_torch[:, :, :, c] = image_torch[:, :, :, c] / maxis[c]
 
     print('Upscaling to target resolution')
     voxsize = np.sqrt(np.sum(aff2 ** 2, axis=0))[:-1]
     print("found voxel size: ", voxsize)
-    #voxsize = 1
+
     factors = (voxsize / ref_res)
     upscaled = myzoom_torch(image_torch, factors, device=device)
-    #if len(upscaled.shape) == 3:
-    #    upscaled = upscaled[..., np.newaxis]
+
     aff_upscaled = aff2.copy()
     for j in range(3):
         aff_upscaled[:-1, j] = aff_upscaled[:-1, j] / factors[j]
@@ -76,13 +68,6 @@ def main():
 
 
     print('Pushing data through the CNN')
-    #with torch.no_grad():
-    #    sr = torch.zeros_like(upscaled)
-    #    for c in range(nc):
-    #        print('   Frame ' + str(1 + c) + ' of ' + str(nc), end="\r")
-    #        pred = model(upscaled[:,:,:,c][None, None, ...])
-    #        sr[:, :, :, c] = maxis[c] * torch.squeeze(pred)
-    #        upscaled[:, :, :, c] = upscaled[:,:,:,c] * maxis[c]  # TODO: possibly disable
 
     upscaled_unpermuted = upscaled.clone()
     upscaled = upscaled.permute(3, 0, 1, 2)
@@ -91,17 +76,12 @@ def main():
 
     pred = torch.squeeze(pred)
     pred = pred.permute(1,2,3,0)
-
-    #for c in range(n_channels):
-    #    pred[:,:,:,c] = pred[:,:,:,c] * maxis[c]
-
     print('\nSaving to disk')
-    print("Mean is: ", np.mean(pred.detach().cpu().numpy()))
+    #print("Mean is: ", np.mean(pred.detach().cpu().numpy()))
     save_volume(pred.detach().cpu().numpy(), aff_upscaled, output_file)
     #save_volume(upscaled_unpermuted.detach().cpu().numpy(), aff_upscaled, upscaled_file)
 
-    print('All done')
-    print('freeview ' + input_file + ' ' + upscaled_file + ' ' + output_file)
+    print('All done!')
 
 
 # execute script

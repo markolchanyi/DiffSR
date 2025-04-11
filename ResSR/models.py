@@ -21,7 +21,7 @@ class SEBlock(nn.Module):
 
 
 class ResBlock(nn.Module):
-    def __init__(self, num_filters, kernel_size, bias=True, bn=True, act=nn.ReLU(False), res_scale=0.1):
+    def __init__(self, num_filters, kernel_size, bias=True, bn=True, act=nn.ELU(alpha=1.0, inplace=False), res_scale=0.1):
         super(ResBlock, self).__init__()
 
         pad = (kernel_size // 2)
@@ -53,7 +53,7 @@ class SRmodel(nn.Module):
         pad = (kernel_size // 2)
 
         ## number of spherical harmonic coeffs
-        m_head = [nn.Conv3d(28, num_filters, kernel_size,  padding=pad)]
+        m_head = [nn.Conv3d(1, num_filters, kernel_size,  padding=pad)]
 
         m_body = []
         for _ in range(num_residual_blocks):
@@ -63,7 +63,7 @@ class SRmodel(nn.Module):
 
         # define tail module
         m_tail = [
-            nn.Conv3d(num_filters, 28, kernel_size, padding=pad)
+            nn.Conv3d(num_filters, 1, kernel_size, padding=pad)
         ]
 
         self.head = nn.Sequential(*m_head)

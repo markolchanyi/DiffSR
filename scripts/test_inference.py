@@ -18,7 +18,7 @@ def main():
     # arguments
     device = args.device
     model_file = args.model
-    input_file = args.i 
+    input_file = args.i
     output_file = args.o
     upscaled_file = args.upscaled
     n_frames = args.frames
