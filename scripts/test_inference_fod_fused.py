@@ -30,7 +30,7 @@ def main():
     num_filters = 256
     num_residual_blocks = 24
     kernel_size = 3
-    use_global_residual = True
+    use_global_residual = False
     ref_res = 1.25
     n_channels = 28
 

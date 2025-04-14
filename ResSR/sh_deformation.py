@@ -1,12 +1,21 @@
 #!/usr/bin/env python3
-
+import argparse
 import numpy as np
+import random
 import nibabel as nib
 import spherical
 import quaternionic
 import scipy.linalg
 from scipy.ndimage import map_coordinates
 
+def make_1d_ramp(size, boundary_blend):
+    ramp = np.ones(size, dtype=np.float32)
+    for i in range(boundary_blend):
+        if i < size:
+            ramp[i] = i / boundary_blend
+            ramp[size - 1 - i] = i / boundary_blend
+    # cont be greater than 1
+    return np.clip(ramp, 0.0, 1.0)
 
 def all_lm_pairs_up_to_lmax(lmax):
     """List (l,m) for l in [0..lmax], m in [-l..l]."""
@@ -148,6 +157,139 @@ def generate_bspline_random_displacement_field(vol_shape, spacing=16, warp_scale
         disp_field[..., c] = interp_vals.reshape((Z, Y, X)).transpose((2,1,0))
 
     return disp_field
+
+
+def build_local_bspline_displacement(
+    vol_shape,
+    patch_min_corner,
+    patch_size,
+    spacing=16,
+    warp_scale=2.0,
+    boundary_blend=2
+):
+    """
+    Create a B-spline random displacement (like your global version) 
+    *only inside* a specified patch, 
+    with a smooth taper to zero at the patch boundary (Dirichlet boundary).
+
+    Args:
+      vol_shape: tuple (X, Y, Z).
+      patch_min_corner: (x0, y0, z0).
+      patch_size: (px, py, pz).
+      spacing: B-spline control-point spacing for the local patch.
+      warp_scale: amplitude of random warp in the patch.
+      boundary_blend: # of voxels to blend from 1.0->0.0 near patch edges.
+
+    Returns:
+      disp_local: shape [X, Y, Z, 3], 
+                  zero outside patch, 
+                  random B-spline inside patch with smooth boundary.
+    """
+
+    X, Y, Z = vol_shape
+    x0, y0, z0 = patch_min_corner
+    px, py, pz = patch_size
+
+    disp_patch = generate_bspline_random_displacement_field(
+        (px, py, pz),
+        spacing=spacing,
+        warp_scale=warp_scale
+    )  # shape [px, py, pz, 3]
+
+    # 2) Build a smooth boundary mask to ensure the displacement is zero at patch edges
+    #    (Dirichlet boundary condition)
+    blend_mask = np.ones((px, py, pz), dtype=np.float32)
+
+    ramp_x = make_1d_ramp(px, boundary_blend)
+    ramp_y = make_1d_ramp(py, boundary_blend)
+    ramp_z = make_1d_ramp(pz, boundary_blend)
+
+    for ix in range(px):
+        for iy in range(py):
+            for iz in range(pz):
+                blend_mask[ix, iy, iz] = ramp_x[ix] * ramp_y[iy] * ramp_z[iz]
+
+    # Apply the blend mask to disp_patch
+    for c in range(3):
+        disp_patch[..., c] *= blend_mask
+
+    # 3) Insert disp_patch into a volume-sized array, zero outside
+    disp_local = np.zeros((X, Y, Z, 3), dtype=np.float32)
+    x1 = x0 + px
+    y1 = y0 + py
+    z1 = z0 + pz
+
+    disp_local[x0:x1, y0:y1, z0:z1, :] = disp_patch
+
+    return disp_patch
+    #return disp_local
+
+
+def build_local_shear_displacement(
+    vol_shape,
+    patch_min_corner,
+    patch_size,
+    shear_factors=(0.1, 0.0, 0.0),
+    boundary_blend=2):
+    """
+    Create a local *pure shear* displacement field, zero outside patch,
+    smoothly transitioning to zero at patch boundary.
+    """
+
+    X, Y, Z = vol_shape
+    x0, y0, z0 = patch_min_corner
+    px, py, pz = patch_size
+    sx, sy, sz = shear_factors
+
+    disp_local = np.zeros((X, Y, Z, 3), dtype=np.float32)
+
+    # local coords
+    xx = np.arange(px, dtype=np.float32)
+    yy = np.arange(py, dtype=np.float32)
+    zz = np.arange(pz, dtype=np.float32)
+    zzg, yyg, xxg = np.meshgrid(zz, yy, xx, indexing='ij')  # shape [pz, py, px]
+
+    # Shear matrix
+    shear_mat = np.array([
+        [1,  sx,  sx],
+        [sy, 1,   sy],
+        [sz, sz,  1 ]
+    ], dtype=np.float32)
+
+    local_coords = np.stack([xxg, yyg, zzg], axis=-1)  # [pz, py, px, 3], "patch space"
+    shp = local_coords.shape
+    coords_flat = local_coords.reshape(-1, 3)
+
+    # Apply shear: new = shear_mat @ old
+    sheared_flat = coords_flat @ shear_mat.T
+    disp_patch = (sheared_flat - coords_flat).reshape(shp)  # [pz, py, px, 3]
+
+    # boundary blend
+    blend_mask = np.ones((pz, py, px), dtype=np.float32)
+
+    ramp_x = make_1d_ramp(px, boundary_blend)
+    ramp_y = make_1d_ramp(py, boundary_blend)
+    ramp_z = make_1d_ramp(pz, boundary_blend)
+
+    for iz in range(pz):
+        for iy in range(py):
+            for ix in range(px):
+                blend_mask[iz, iy, ix] = ramp_x[ix] * ramp_y[iy] * ramp_z[iz]
+
+    for c in range(3):
+        disp_patch[..., c] *= blend_mask
+
+    # Insert into disp_local at patch location
+    x1 = x0 + px
+    y1 = y0 + py
+    z1 = z0 + pz
+
+    # watch axis order carefully if needed:
+    #disp_local[x0:x1, y0:y1, z0:z1, :] = disp_patch
+    disp_local[x0:x1, y0:y1, z0:z1, :] = disp_patch.transpose((2, 1, 0, 3))
+
+    return disp_patch.transpose((2, 1, 0, 3))
+    #return disp_local
 
 
 def compute_displacement_jacobian_field(displacement_field):
@@ -337,7 +479,6 @@ def warp_and_reorient_sh_volume_evenl(
 
 
 if __name__ == "__main__":
-    import argparse
 
     parser = argparse.ArgumentParser(
         description="B-spline random warp + local Wigner-D rotation for even-l SH (28 coeffs)."
@@ -351,8 +492,10 @@ if __name__ == "__main__":
         help="Spacing for B-spline control points (vox).")
     parser.add_argument("--warp_scale", type=float, default=5.0,
         help="Amplitude of random warp at control points (vox).")
-    parser.add_argument("--check_global_jacobian", type=bool, default=True,
+    parser.add_argument("--check_global_jacobian", type=bool, required=True,
         help="Perform a check on negative jacobian determinants and discard the displacement field if ")
+    parser.add_argument("--patch_only", type=int, required=True,
+        help="Only calculate the defomation field on a sub_patch.")
     args = parser.parse_args()
 
 
@@ -363,25 +506,112 @@ if __name__ == "__main__":
 
     if nCoeffs != 28:
         raise ValueError(f"Expected 28 SH coeffs for even-l up to lmax=6, got {nCoeffs}.")
+    #print("patch only arg is: ", args.patch_only)
+    if not args.patch_only:
+        #print("DOING GLOB DEFORMATION")
+        max_attempts = 30
+        attempt = 0
+        while attempt < max_attempts:
+            #print("attempt global: ", attempt)
+            disp_field = generate_bspline_random_displacement_field(
+                (X, Y, Z),
+                spacing=args.spacing,
+                warp_scale=args.warp_scale)
+            attempt += 1
+            if check_jacobian_all_positive(disp_field):
+                break
+        else:
+            #print("max attempts of global disp field generation reached")
+            disp_field = np.zeros((X,Y,Z,3), dtype=np.float32)
 
-    disp_field = generate_bspline_random_displacement_field(
-        (X, Y, Z),
-        spacing=args.spacing,
-        warp_scale=args.warp_scale
-    )
+    if args.patch_only:
+        #disp_field = np.zeros_like(disp_field)
+
+        px = np.random.randint(8, 18)
+        py = np.random.randint(8, 18)
+        pz = np.random.randint(8, 18)
+        x0 = np.random.randint(0, max(X - px, 1))
+        y0 = np.random.randint(0, max(Y - py, 1))
+        z0 = np.random.randint(0, max(Z - pz, 1))
+
+        x1 = x0 + px
+        y1 = y0 + py
+        z1 = z0 + pz
+
+        #meth = np.random.choice(["bspline", "shear", "both"])
+        meth = "both"
+
+        max_attempts = 100
+        attempt = 0
+        while attempt < max_attempts:
+            #print("patch attempt", attempt)
+            #disp_local = np.zeros_like(disp_field)
+            disp_local = np.zeros((px,py,pz,3), dtype=np.float32)
+
+            if meth in ["bspline", "both"]:
+                # Local B-spline
+                #print("building spline")
+                local_disp_bspline = build_local_bspline_displacement(
+                    vol_shape=(X, Y, Z),
+                    patch_min_corner=(x0, y0, z0),
+                    patch_size=(px, py, pz),
+                    spacing=np.random.uniform(1, np.max((px,py,pz))/2),
+                    warp_scale=np.random.uniform(1,2.5),
+                    boundary_blend=2)
+                disp_local += local_disp_bspline
+
+            if meth in ["shear", "both"]:
+                # Local shear
+                #print("building shear")
+                sx = np.random.uniform(-0.25, 0.25)
+                sy = np.random.uniform(-0.25, 0.25)
+                sz = np.random.uniform(-0.25, 0.25)
+                local_disp_shear = build_local_shear_displacement(
+                    vol_shape=(X, Y, Z),
+                    patch_min_corner=(x0, y0, z0),
+                    patch_size=(px, py, pz),
+                    shear_factors=(sx, sy, sz),
+                    boundary_blend=2)
+                disp_local += local_disp_shear
+
+            disp_field = disp_local
+            attempt += 1
+
+            if check_jacobian_all_positive(disp_local):
+                break
+        else:
+            #print("max amount of tries for local field reached")
+            disp_field = np.zeros_like(disp_local)
+        # simply add loc disp to glob disp
+        #disp_field += disp_local
+
+
+    #valid_det = check_jacobian_all_positive(disp_field)
+    #if not valid_det:
+    #    print(" ")
+    #    print("bad deterninant!!")
+    #    print(" ")
+    if args.patch_only:
+        warped_sh = sh_data
+        warped_sh_patch = warp_and_reorient_sh_volume_evenl(sh_data[x0:x1, y0:y1, z0:z1, :], disp_field, lmax=args.lmax)
+        warped_sh[x0:x1, y0:y1, z0:z1, :] = warped_sh_patch
+    else:
+        warped_sh = warp_and_reorient_sh_volume_evenl(sh_data, disp_field, lmax=args.lmax)
 
     # discard def fields with negative Jacs to avoid implausible
     # v1 computations
-    if args.check_global_jacobian:
-        valid_det = check_jacobian_all_positive(disp_field)
-        if not valid_det:
+    #if args.check_global_jacobian:
+    #    valid_det = check_jacobian_all_positive(disp_field)
+    #    if not valid_det:
             #print("Warning: negative or zero determinant found! Skipping...")
-            warped_sh = sh_data
-        else:
-            warped_sh = warp_and_reorient_sh_volume_evenl(sh_data, disp_field, lmax=args.lmax)
+    #        warped_sh = sh_data
 
+    #if args.patch_only:
+    #noise_std_min = 0.0
+    #noise_std_max = 0.01
+    #noise_std = noise_std_min + (noise_std_max - noise_std_min) * * np.random.rand()
+    #warped_sh_patch_noisy = warped_sh_patch + noise_std * np.random.randn(*warped_sh_patch.shape)
 
     out_img = nib.Nifti1Image(warped_sh, affine_in)
     nib.save(out_img, args.out_sh)
-    #print(f"Saved warped SH to: {args.out_sh}")
 

@@ -81,13 +81,13 @@ def hr_lr_random_res_generator(training_dir,
             beta = np.random.uniform(-rotation_bounds, rotation_bounds)
             gamma = np.random.uniform(-rotation_bounds, rotation_bounds)
 
-            spline_spacing = 10
-            deform_mag = random.randint(2, 4)
+            spline_spacing = random.randint(8, 15)
+            deform_mag = random.uniform(2, 3)
 
             os.makedirs('./tmp', exist_ok=True)
             nib.save(nib.Nifti1Image(hr_cropped.cpu().numpy(), affine=aff), './tmp/sh_raw.nii.gz')
 
-            if random.random() < 0.08:
+            if random.random() < 0.05:
                 #print("ROTATING!!")
                 cmd = "python ../ResSR/sh_rotation.py"
                 cmd += " -i ./tmp/sh_raw.nii.gz"
@@ -106,6 +106,8 @@ def hr_lr_random_res_generator(training_dir,
                 cmd += " --out_sh ./tmp/sh_dwig.nii.gz"
                 cmd += " --spacing " + str(spline_spacing)
                 cmd += " --warp_scale " + str(deform_mag)
+                cmd += " --check_global_jacobian False"
+                cmd += " --patch_only 0"
                 os.system(cmd)
                 #print("done!!")
 
@@ -149,12 +151,15 @@ def hr_lr_random_res_generator(training_dir,
         hr_bias = hr_gamma.detach().clone()
         hr_bias[...,0] = hr_gamma[...,0] * bias
 
+
         ## Dir-specific bias ##
         ## approximated with low-rank mixing for now TODO
         if random.random() < 0.25:
             #print("applying bias")
             hr_bias[...,1:] = rand_lowrank_mix(hr_bias[...,1:], rank=4, scale=0.05)
             #print("done")
+
+        ### RANDOM DROPOUT
         sh_mapping = {
             0: [0],
             2: [1, 2, 3, 4, 5],
@@ -215,6 +220,31 @@ def hr_lr_random_res_generator(training_dir,
         # Finally, we go back to the original resolution
         input = myzoom_torch(lr_noisy, ratios, device=device)
 
+        input_nopatched = input.detach().clone()
+
+        ## RANDOM PATCHING
+        if random.random() < 0.25:
+            os.makedirs('./tmp', exist_ok=True)
+            nib.save(nib.Nifti1Image(input.cpu().numpy(), affine=aff), './tmp/sh_raw.nii.gz')
+            #print("starting patch")
+            cmd = "python ../ResSR/sh_deformation.py"
+            cmd += " --in_sh ./tmp/sh_raw.nii.gz"
+            cmd += " --out_sh ./tmp/sh_dwig.nii.gz"
+            cmd += " --spacing 1"
+            cmd += " --warp_scale 1"
+            cmd += " --check_global_jacobian False"
+            cmd += " --patch_only 1"
+            os.system(cmd)
+            #print("done")
+            input_patched, _ = load_volume('./tmp/sh_dwig.nii.gz')
+            input_patched = input_patched.astype(float)
+            input_patched = np.squeeze(input_patched)
+            input_patched = torch.tensor(input_patched, device=device).float()
+            input_patched[torch.isnan(input_patched)] = 0.0
+            input_patched[torch.isinf(input_patched)] = 0.0
+            input=input_patched
+            shutil.rmtree('./tmp')
+
         input = input.float()
         target = target.float()
 
@@ -229,10 +259,10 @@ def hr_lr_random_res_generator(training_dir,
         ##### TEST SAVE
         #print("Saving intermediates...")
         #os.makedirs("./tmp",exist_ok=True)
+        #input_npy = input_nopatched.cpu().numpy()
+        #nib.save(nib.Nifti1Image(input_npy, affine=np.eye(4)), './tmp/input_nopatched.nii.gz')
         #input_npy = input.cpu().numpy()
         #nib.save(nib.Nifti1Image(input_npy, affine=np.eye(4)), './tmp/input.nii.gz')
-        #lr_npy = input.cpu().numpy()
-        #nib.save(nib.Nifti1Image(lr_npy, affine=np.eye(4)), './tmp/lr.nii.gz')
         #target_npy = target.cpu().numpy()
         #nib.save(nib.Nifti1Image(target_npy, affine=np.eye(4)), './tmp/target.nii.gz')
         #print("done")

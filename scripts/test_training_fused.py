@@ -22,14 +22,14 @@ crop_size = 48
 kernel_size = 3
 prob_dropout=0.15,
 prob_sh_rotate_deform=0.2,
-use_global_residual = True
+use_global_residual = False
 n_epochs = 2000
 n_its_per_epoch = 100
 output_directory = '/autofs/space/nicc_005/users/olchanyi/DiffSR/models_fused/model_fused_v2/'
-initial_model = '/autofs/space/nicc_005/users/olchanyi/DiffSR/models_fused/model_fused_v1/checkpoint_1100.pth'
-#initial_model = None
-noise_std_max=0.06
-lowres_min=2
+#initial_model = '/autofs/space/nicc_005/users/olchanyi/DiffSR/models_fused/model_fused_v2/checkpoint_1320.pth'
+initial_model = None
+noise_std_max=0.04
+lowres_min=1.5
 lowres_max=4
 njobs = 64
 
@@ -57,10 +57,10 @@ model = SRmodel(num_filters=num_filters,
                 num_filters_l0=64,
                 num_residual_blocks_l0=12).to(device_training)
 
-optimizer = Adam(model.parameters(), lr=5e-5, weight_decay=1e-6)
+optimizer = Adam(model.parameters(), lr=1e-4, weight_decay=1e-6)
 
 # Initialize scheduler
-scheduler = lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=50, T_mult=2, eta_min=1e-6)
+scheduler = lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=100, T_mult=2, eta_min=1e-6)
 
 l1_loss_fn = L1Loss()
 l2_loss_fn = MSELoss()
@@ -97,7 +97,7 @@ for j in range(n_epochs - epoch_ini):
 
         pred = model(input)
         #loss = loss_fn(pred, target)
-        loss, l1_loss, l2_loss = mixed_loss(pred, target, l1_loss_fn, l2_loss_fn, alpha=0.01, beta=1, multiplier=10000, l0_multiplier=None)
+        loss, l1_loss, l2_loss = mixed_loss(pred, target, l1_loss_fn, l2_loss_fn, alpha=0.05, beta=1, multiplier=10000, l0_multiplier=None)
         optimizer.zero_grad()
         loss.backward()
         #torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
