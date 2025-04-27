@@ -398,13 +398,14 @@ class EvenLRotator:
 def warp_and_reorient_sh_volume_evenl(
     real_sh_coeffs_4d,
     displacement_field_4d,
-    lmax=6
-):
+    lmax=6):
+
     """
     real_sh_coeffs_4d: shape [X, Y, Z, 28] for lmax=6 even-l
     displacement_field_4d: shape [X, Y, Z, 3]
     returns warped_sh of same shape
     """
+
     X, Y, Z, nCoeffs = real_sh_coeffs_4d.shape
     jac_field = compute_displacement_jacobian_field(displacement_field_4d)
 
@@ -478,6 +479,49 @@ def warp_and_reorient_sh_volume_evenl(
     return warped_sh
 
 
+def warp_single_channel(channel, displacement_field):
+
+    X, Y, Z = channel.shape
+
+    # Build a coordinate grid in output space
+    grid_z, grid_y, grid_x = np.meshgrid(
+        np.arange(Z), np.arange(Y), np.arange(X), indexing='ij'
+    )
+    flat_xp = grid_x.ravel()
+    flat_yp = grid_y.ravel()
+    flat_zp = grid_z.ravel()
+    Nvox = X*Y*Z
+
+    disp_x = displacement_field[..., 0].ravel()
+    disp_y = displacement_field[..., 1].ravel()
+    disp_z = displacement_field[..., 2].ravel()
+
+    # Build input coords for map_coordinates
+    input_coords = np.zeros((3, Nvox), dtype=np.float32)
+    for idx in range(Nvox):
+        ixp = flat_xp[idx]
+        iyp = flat_yp[idx]
+        izp = flat_zp[idx]
+        dx = disp_x[idx]
+        dy = disp_y[idx]
+        dz = disp_z[idx]
+        x_in = ixp - dx
+        y_in = iyp - dy
+        z_in = izp - dz
+        # map_coordinates wants (z,y,x)
+        input_coords[0, idx] = z_in
+        input_coords[1, idx] = y_in
+        input_coords[2, idx] = x_in
+
+
+    # Interpolate
+    vol_c_t = np.transpose(channel, (2,1,0))  # shape [Z,Y,X]
+    vals_c = map_coordinates(vol_c_t, input_coords, order=1, mode='nearest')
+
+    warped = vals_c.reshape((Z, Y, X)).transpose(2, 1, 0)
+    return warped
+
+
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(
@@ -504,11 +548,10 @@ if __name__ == "__main__":
     affine_in = sh_img.affine
     X, Y, Z, nCoeffs = sh_data.shape
 
-    if nCoeffs != 28:
-        raise ValueError(f"Expected 28 SH coeffs for even-l up to lmax=6, got {nCoeffs}.")
-    #print("patch only arg is: ", args.patch_only)
+    if nCoeffs != 29:
+        raise ValueError(f"Expected 28 + 1 SH coeffs + mean lowb for even-l up to lmax=6, got {nCoeffs}.")
+
     if not args.patch_only:
-        #print("DOING GLOB DEFORMATION")
         max_attempts = 30
         attempt = 0
         while attempt < max_attempts:
@@ -521,12 +564,9 @@ if __name__ == "__main__":
             if check_jacobian_all_positive(disp_field):
                 break
         else:
-            #print("max attempts of global disp field generation reached")
             disp_field = np.zeros((X,Y,Z,3), dtype=np.float32)
 
     if args.patch_only:
-        #disp_field = np.zeros_like(disp_field)
-
         px = np.random.randint(8, 18)
         py = np.random.randint(8, 18)
         pz = np.random.randint(8, 18)
@@ -541,11 +581,9 @@ if __name__ == "__main__":
         #meth = np.random.choice(["bspline", "shear", "both"])
         meth = "both"
 
-        max_attempts = 100
+        max_attempts = 200
         attempt = 0
         while attempt < max_attempts:
-            #print("patch attempt", attempt)
-            #disp_local = np.zeros_like(disp_field)
             disp_local = np.zeros((px,py,pz,3), dtype=np.float32)
 
             if meth in ["bspline", "both"]:
@@ -556,13 +594,11 @@ if __name__ == "__main__":
                     patch_min_corner=(x0, y0, z0),
                     patch_size=(px, py, pz),
                     spacing=np.random.uniform(1, np.max((px,py,pz))/2),
-                    warp_scale=np.random.uniform(1,2.5),
+                    warp_scale=np.random.uniform(1,np.max((px,py,pz))/2),
                     boundary_blend=2)
                 disp_local += local_disp_bspline
 
             if meth in ["shear", "both"]:
-                # Local shear
-                #print("building shear")
                 sx = np.random.uniform(-0.25, 0.25)
                 sy = np.random.uniform(-0.25, 0.25)
                 sz = np.random.uniform(-0.25, 0.25)
@@ -586,31 +622,28 @@ if __name__ == "__main__":
         #disp_field += disp_local
 
 
-    #valid_det = check_jacobian_all_positive(disp_field)
-    #if not valid_det:
-    #    print(" ")
-    #    print("bad deterninant!!")
-    #    print(" ")
     if args.patch_only:
         warped_sh = sh_data
-        warped_sh_patch = warp_and_reorient_sh_volume_evenl(sh_data[x0:x1, y0:y1, z0:z1, :], disp_field, lmax=args.lmax)
-        warped_sh[x0:x1, y0:y1, z0:z1, :] = warped_sh_patch
+
+        warped_sh_patch = warp_and_reorient_sh_volume_evenl(sh_data[x0:x1, y0:y1, z0:z1, 1:], disp_field, lmax=args.lmax)
+        warped_lowb_patch = warp_single_channel(sh_data[x0:x1, y0:y1, z0:z1, 0], disp_field)
+        warped_lowb_patch = warped_lowb_patch[..., np.newaxis]
+
+        warped_sh_patch = np.concatenate([warped_lowb_patch, warped_sh_patch], axis=-1)
+
+        # sprinkle in a bit more noise into the patch just for funsies
+        noise_std_min = 0.0
+        noise_std_max = 0.01
+        noise_std = noise_std_min + (noise_std_max - noise_std_min) * np.random.rand()
+        warped_sh_patch_noisy = warped_sh_patch + noise_std * np.random.randn(*warped_sh_patch.shape)
+
+        warped_sh[x0:x1, y0:y1, z0:z1, :] = warped_sh_patch_noisy
     else:
-        warped_sh = warp_and_reorient_sh_volume_evenl(sh_data, disp_field, lmax=args.lmax)
+        warped_sh = warp_and_reorient_sh_volume_evenl(sh_data[...,1:], disp_field, lmax=args.lmax)
+        warped_lowb = warp_single_channel(sh_data[...,0], disp_field)
 
-    # discard def fields with negative Jacs to avoid implausible
-    # v1 computations
-    #if args.check_global_jacobian:
-    #    valid_det = check_jacobian_all_positive(disp_field)
-    #    if not valid_det:
-            #print("Warning: negative or zero determinant found! Skipping...")
-    #        warped_sh = sh_data
-
-    #if args.patch_only:
-    #noise_std_min = 0.0
-    #noise_std_max = 0.01
-    #noise_std = noise_std_min + (noise_std_max - noise_std_min) * * np.random.rand()
-    #warped_sh_patch_noisy = warped_sh_patch + noise_std * np.random.randn(*warped_sh_patch.shape)
+        warped_lowb = warped_lowb[..., np.newaxis]
+        warped_sh = np.concatenate([warped_lowb, warped_sh], axis=-1)
 
     out_img = nib.Nifti1Image(warped_sh, affine_in)
     nib.save(out_img, args.out_sh)

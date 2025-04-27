@@ -40,8 +40,8 @@ def main():
                 num_residual_blocks=num_residual_blocks,
                 kernel_size=kernel_size,
                 use_global_residual=use_global_residual,
-                num_filters_l0=64,
-                num_residual_blocks_l0=12).to(device)
+                num_filters_nonang=64,
+                num_residual_blocks_nonang=12).to(device)
     checkpoint = torch.load(model_file)
     model.load_state_dict(checkpoint['model_state_dict'])
 
@@ -54,7 +54,7 @@ def main():
 
     image_torch = torch.tensor(image2.copy(), device=device).float()
     print("performing percentile scaling...")
-    image_torch = sh_norm(image_torch, l0_index=0)
+    image_torch = sh_norm(image_torch, l0_index=1)
     image_torch[torch.isnan(image_torch)] = 0.0
     image_torch[torch.isinf(image_torch)] = 0.0
     image_torch = torch.clamp(image_torch, min=-1, max=1)
@@ -79,7 +79,9 @@ def main():
     upscaled = upscaled.permute(3, 0, 1, 2)
 
     print("shape: ", upscaled.shape)
-    upscaled[0:1,...] = upscaled[0:1,...] * 5
+    upscaled[0,...] = upscaled[0,...] * 1.5
+    upscaled[1,...] = upscaled[1,...] * 2
+    upscaled[2:,...] = upscaled[2:,...] * 2
 
     with torch.no_grad():
         pred = model(upscaled[None, :])
@@ -89,7 +91,7 @@ def main():
     print('\nSaving to disk')
     #print("Mean is: ", np.mean(pred.detach().cpu().numpy()))
     save_volume(pred.detach().cpu().numpy(), aff_upscaled, output_file)
-    #save_volume(upscaled_unpermuted.detach().cpu().numpy(), aff_upscaled, upscaled_file)
+    #save_volume(upscaled_unpermuted.detach().cpu().numpy(), aff_upscaled, "./test_upscaled.nii.gz")
 
     print('All done!')
 

@@ -181,6 +181,11 @@ if __name__ == '__main__':
     n_coeffs = num_sh_coeffs(lmax)
     sh_img = nib.load(str(sh_img_path))
     real_sh_coeffs_volume = sh_img.get_fdata()
+
+    lowb_chan = real_sh_coeffs_volume[...,0]
+    real_sh_coeffs_volume = real_sh_coeffs_volume[...,1:]
+    lowb_chan = lowb_chan[..., np.newaxis]
+
     affine = sh_img.affine
     volume_shape = real_sh_coeffs_volume.shape
 
@@ -219,6 +224,11 @@ if __name__ == '__main__':
     # Convert rotated complex SH coefficients back to real SH coefficients
     rotated_real_sh_coeffs_volume = complex_to_real_sh_coeffs_volume(rotated_complex_coeffs_volume, m_array)
 
+    # stack in the lowb (no sh rotation required clearly :^) )
+    rotated_real_sh_coeffs_volume = np.concatenate([lowb_chan, rotated_real_sh_coeffs_volume], axis=-1)
+
+
+
     ##### bulk rotation #####
     rotation_matrix = compute_rotation_matrix(alpha, beta, gamma)
     inverse_rotation_matrix = rotation_matrix.T
@@ -226,7 +236,8 @@ if __name__ == '__main__':
     center = np.array(rotated_real_sh_coeffs_volume.shape[:3]) / 2.0
     offset = center - np.dot(inverse_rotation_matrix, center)
 
-    bulk_rotated_sh_coeffs_volume = np.zeros_like(complex_coeffs_volume)
+    #bulk_rotated_sh_coeffs_volume = np.zeros_like(complex_coeffs_volume)
+
 
     # Parallelize the bulk affine transform loop for SH rotation
     rotated_sh_channels = Parallel(n_jobs=n_jobs, backend="multiprocessing")(

@@ -546,7 +546,7 @@ def gradient_loss(pred, target):
 
 
 
-def mixed_loss(pred, target, l1_loss_fn, l2_loss_fn, alpha=0.5, beta=0.1, multiplier=1.0, l0_multiplier=None):
+def mixed_loss(pred, target, l1_loss_fn, l2_loss_fn, ang_multiplier=None, ang_dirs=None, alpha=0.5, beta=0.1, multiplier=1.0, l0_multiplier=None):
 
     if l0_multiplier is None:
         l1_loss = l1_loss_fn(pred, target)
@@ -569,9 +569,12 @@ def mixed_loss(pred, target, l1_loss_fn, l2_loss_fn, alpha=0.5, beta=0.1, multip
         l1_loss = ((l1_loss_l0 * (l0_multiplier/(target.shape[1]-1))) + l1_loss_other)/2
         l2_loss = ((l2_loss_l0 * (l0_multiplier/(target.shape[1]-1))) + l2_loss_other)/2
 
-    tot_loss = (alpha * l1_loss + (1 - alpha) * l2_loss) * multiplier
+    if ang_multiplier is not None and ang_dirs is not None:
+        ang_loss = sh_angular_loss(pred[:,1:,...], target[:,1:,...], ang_dirs) # remember to discard lowb :)
 
-    return tot_loss, alpha * l1_loss, (1-alpha) * l2_loss
+    tot_loss = (alpha * l1_loss + (1 - alpha) * l2_loss + ang_loss * ang_multiplier) * multiplier
+
+    return tot_loss, alpha * l1_loss, (1-alpha) * l2_loss, ang_loss * ang_multiplier * multiplier
 
 
 def random_crop(hr, crop_size):
@@ -586,7 +589,7 @@ def random_crop(hr, crop_size):
         crop = hr[start[0]:end[0], start[1]:end[1], start[2]:end[2], :]
         non_zero_fraction = (crop[..., 0] != 0).float().mean().item()
 
-        if non_zero_fraction > 0.5:
+        if non_zero_fraction > 0.7:
             return crop
 
 def make_rotation_matrix(angles):
@@ -897,39 +900,46 @@ def percentile_scaling(sh_tensor, l0_index=0, k=2.0, new_min=-1.0, new_max=1.0, 
     return sh_tensor_normalized
 
 
-def sh_norm(sh_tensor, l0_index=0):
+def sh_norm(sh_tensor, l0_index=1):
     """
     Scales the l=0 channel of the SH tensor to [new_min, new_max] based on specified percentiles,
     considering only values greater than a specified threshold.
     """
     # Extract the l=0 channel and l2 channels
     # norm factor for l>0 will be w.r.t. l2 coeffs for consistancy
-    l0 = sh_tensor[..., l0_index]
-    l2 = sh_tensor[..., 1:6]
+    lowb = sh_tensor[..., 0]
+    l0 = sh_tensor[..., 1]
+    l2 = sh_tensor[..., 2:7]
 
-    mask_l0 = (l0 > 0.000001)
+    mask_l0 = (l0 > 0.001)
+    mask_lowb = (lowb > 0.001)
 
+    lowb_filtered = lowb[mask_lowb]
     l0_filtered = l0[mask_l0]
     l2_filtered = l2[mask_l0]
 
 
     l2_std = torch.std(l2_filtered)
+
     log_l0_mean = torch.mean(torch.log(l0_filtered))
     log_l0_std = torch.std(torch.log(l0_filtered))
     l0_std = (torch.exp(log_l0_std**2) - 1)*(torch.exp(2*log_l0_mean + log_l0_std**2))
 
-    #print("l2 std: ", l2_std)
-    #print("log l0 mean: ", log_l0_mean)
-    #print("log l0 std: ", log_l0_std)
+    log_lowb_mean = torch.mean(torch.log(lowb_filtered))
+    log_lowb_std = torch.std(torch.log(lowb_filtered))
+    lowb_std = (torch.exp(log_lowb_std**2) - 1)*(torch.exp(2*log_lowb_mean + log_lowb_std**2))
 
-    # assume norm and log norm for distributions of l0/l2+
+
+    # assume norm and log norm for distributions of lowb/l0 and l2+
     # assume zero mean for l2+ (empirirically true)
     l2_scale = 1/(15*l2_std)
-    l0_scale = 1/(15*torch.sqrt(l0_std))
+    l0_scale = 1/(12*torch.sqrt(l0_std))
+    lowb_scale = 1/(12*torch.sqrt(lowb_std))
 
     sh_tensor_normalized = sh_tensor.detach().clone()
-    sh_tensor_normalized[..., l0_index] = sh_tensor_normalized[..., l0_index]*l0_scale
-    sh_tensor_normalized[..., 1:] = sh_tensor_normalized[..., 1:]*l2_scale
+    sh_tensor_normalized[..., 0] = sh_tensor_normalized[..., 0]*lowb_scale #lowb
+    sh_tensor_normalized[..., 1] = sh_tensor_normalized[..., 1]*l0_scale #l0
+    sh_tensor_normalized[..., 2:] = sh_tensor_normalized[..., 2:]*l2_scale #l2+
 
     return sh_tensor_normalized
 
@@ -962,3 +972,248 @@ def rand_lowrank_mix(S, rank=8, scale=0.02):
     S_mixed[rough_mask] = 0
     # Reshape back
     return S_mixed_flat.view(X, Y, Z, C)
+
+
+# figure out how many even-l coefficients
+def num_evenl_coeffs_up_to(lmax):
+    count = 0
+    for L in range(0, lmax+1, 2):
+        count += (2*L + 1)
+    return count
+
+
+def _mrtrix_real_sh_basis(directions, lmax=6, device='cpu'):
+    """
+    Compute the real-valued spherical harmonic basis up to *even* lmax (e.g. 0,2,4,6),
+    in the MRtrix convention:
+      Y_{l,0}^real(θ,φ),  Y_{l,m>0}^real = √2 * N_{l,m} * P_l^m(cosθ) cos(m φ),
+                         Y_{l,m<0}^real = √2 * N_{l,|m|} * P_l^{|m|}(cosθ) sin(|m| φ),
+    skipping *odd* l entirely.
+
+    Args:
+      directions: (N, 3) float32 tensor. Each row is a unit vector [x,y,z].
+      lmax: maximum *even* l. (e.g. 6)
+      device: 'cpu' or 'cuda'.
+
+    Returns:
+      basis: (N, nCoeffs) float32, where nCoeffs = sum_{l=0,2,4,.. <= lmax} (2l + 1).
+             The columns are ordered by ascending l, then m in [-l..l].
+             (Skipping odd l.)
+             i.e. for l=0 => m=0,
+                for l=2 => m=-2,-1,0,1,2,
+                for l=4 => m=-4..4, etc.
+    """
+
+    directions = directions.to(device)
+    N = directions.size(0)
+
+    # Convert [x,y,z] -> spherical angles:
+    #  r = sqrt(x^2 + y^2 + z^2) [should be ~1 for a unit vector]
+    #  θ = arccos(z / r) in [0..π]
+    #  φ = atan2(y, x) in (-π..π]
+    x = directions[:, 0]
+    y = directions[:, 1]
+    z = directions[:, 2]
+
+    r = torch.sqrt(x*x + y*y + z*z) + 1e-15
+    theta = torch.acos(torch.clamp(z / r, -1.0, 1.0))
+    phi = torch.atan2(y, x)
+    # optional: ensure phi in [0, 2π)
+    # phi = torch.where(phi<0, phi + 2*math.pi, phi)
+
+
+    nCoeffs = num_evenl_coeffs_up_to(lmax)
+    basis = torch.zeros((N, nCoeffs), dtype=torch.float32, device=device)
+
+    # We'll accumulate columns in ascending l, then m from -l..l
+    # col_index keeps track of which column we're filling
+    col_index = 0
+
+    for L in range(0, lmax+1, 2):  # only even L
+        for m in range(-L, L+1):
+            # compute the real SH at this (L,m) for all directions
+
+            # 1) Normalization factor N_{l,m}
+            #    lpmv requires m>=0, so we'll use abs(m).
+            #    lpmv(m,l,x) = P_l^m(x).
+            # note: some references have a (-1)^m factor for lpmv, but
+            # scipy.special.lpmv already includes that. We typically do not add extra sign here.
+
+            # For negative m, we'll use |m|.
+            absm = abs(m)
+            # lpmv signature: lpmv(m, l, x) => P_l^m(x).
+            # But we might need float double in numpy:
+            # we'll convert theta->cosθ in double, do np arrays, then back to torch
+            # We'll do that for convenience.
+
+            # Normalization
+            # N_{l,m} = sqrt( (2l+1)/(4π) * (l-m)!/(l+m)! )
+            # but we need factorials => use math.gamma or so in python or special
+            # We'll do:
+            tmp1 = (2*L + 1)/(4.0*math.pi)
+            # factorial ratio => gamma(L-m+1)/gamma(L+m+1).
+            # We'll do math.gamma(L-m+1).
+            numerator = math.gamma(L - absm + 1)
+            denominator = math.gamma(L + absm + 1)
+            tmp2 = numerator/denominator
+            N_lm = math.sqrt(tmp1 * tmp2)
+
+            # We'll gather cosθ in a CPU numpy array
+            cos_theta_np = torch.cos(theta).cpu().numpy().astype(np.float64)
+
+            # compute P_l^m(cosθ) => shape (N,)
+            Plm_vals = lpmv(absm, L, cos_theta_np)  # double precision
+            # now back to torch on the correct device
+            Plm_torch = torch.from_numpy(Plm_vals).float().to(device)
+
+            if m == 0:
+                # Y_{l,0} = N_l0 P_l^0(cosθ)
+                Ylm = N_lm * Plm_torch
+            elif m > 0:
+                # Y_{l,m>0} = sqrt(2) * N_lm * P_l^m(cosθ)* cos(m φ)
+                Ylm = math.sqrt(2.0) * N_lm * Plm_torch * torch.cos(m*phi)
+            else:
+                # m<0 => Y_{l,m<0} = sqrt(2) * N_lm * P_l^{|m|}(cosθ)* sin(|m| φ)
+                Ylm = math.sqrt(2.0) * N_lm * Plm_torch * torch.sin(absm*phi)
+
+            # place in basis
+            basis[:, col_index] = Ylm
+            col_index += 1
+
+    return basis
+
+
+def fibonacci_sphere(samples=1000, device='cpu'):
+
+    points = []
+    phi = math.pi * (math.sqrt(5.) - 1.)  # golden angle in radians
+
+    for i in range(samples):
+        y = 1 - (i / float(samples - 1)) * 2  # y goes from 1 to -1
+        radius = math.sqrt(1 - y * y)  # radius at y
+
+        theta = phi * i  # golden angle increment
+
+        x = math.cos(theta) * radius
+        z = math.sin(theta) * radius
+
+        points.append((x, y, z))
+
+    points_torch = torch.tensor(points, dtype=torch.float32, device=device)
+    points_torch = points_torch / torch.norm(points_torch, dim=1, keepdim=True)
+
+    return points_torch
+
+
+def evaluate_mrtrix_sh(sh_volume, Ylm_matrix):
+    """
+    Evaluate an SH volume at each direction in Ylm_matrix using matrix multiply.
+    sh_volume: shape (B, nCoeffs, X, Y, Z)
+    Ylm_matrix: shape (N, nCoeffs)
+
+    Returns:
+      signal_vol: shape (B, N, X, Y, Z)
+    """
+
+    B, nCoeffs, X, Y, Z = sh_volume.shape
+    N = Ylm_matrix.size(0)
+
+    # Flatten the spatial dims (X,Y,Z) => single dimension
+    # shape => (B, nCoeffs, X*Y*Z)
+    sh_flat = sh_volume.flatten(start_dim=2, end_dim=4)
+
+    # Expand Ylm to match batch => (B, N, nCoeffs)
+    Ylm_expanded = Ylm_matrix.unsqueeze(0).expand(B, -1, -1)
+
+    # Multiply => shape (B, N, X*Y*Z)
+    signal_flat = torch.bmm(Ylm_expanded, sh_flat)
+
+    # Reshape back => (B, N, X, Y, Z)
+    signal_vol = signal_flat.reshape(B, N, X, Y, Z)
+
+    return signal_vol
+
+
+def soft_argmax_direction(signal_vol, directions, gamma=10.0, eps=1e-9):
+    """
+    Given signal_vol (B, N, X, Y, Z) and a set of directions (N,3),
+    compute an approximate principal direction via a "soft-argmax".
+    Returns: (B,3,X,Y,Z)
+    """
+    B, N, X, Y, Z = signal_vol.shape
+    device = signal_vol.device
+
+    # Flatten the spatial dims => shape (B, N, X*Y*Z)
+    sig_flat = signal_vol.flatten(start_dim=2)  # shape => (B, N, M), M = X*Y*Z
+
+    exp_vals = torch.exp(gamma * sig_flat)              # (B, N, M)
+    weights = exp_vals / (exp_vals.sum(dim=1, keepdim=True) + eps)  # (B, N, M)
+
+    # We'll do a weighted sum of directions (N,3)
+    # a) transpose => (B, M, N)
+    weights_t = weights.transpose(1, 2)   # (B, M, N)
+
+    # b) expand directions => (B, N, 3)
+    directions = directions.to(device)
+    dirs_expanded = directions.unsqueeze(0).expand(B, -1, -1)  # (B, N, 3)
+
+    # c) batch matrix multiply => (B, M, 3)
+    sum_flat = torch.bmm(weights_t, dirs_expanded)
+
+    # d) normalize each vector => (B, M, 3)
+    norm_ = sum_flat.norm(dim=2, keepdim=True) + eps
+    princ_2d = sum_flat / norm_
+
+    # e) reshape => (B, X, Y, Z, 3) then permute => (B,3,X,Y,Z)
+    princ_4d = princ_2d.reshape(B, X, Y, Z, 3).permute(0, 4, 1, 2, 3)
+
+    return princ_4d
+
+
+def principal_direction_from_sh(
+    sh_volume: torch.Tensor,
+    directions: torch.Tensor,
+    lmax=6,
+    gamma=10.0) -> torch.Tensor:
+    """
+    1) Build real-SH basis from 'directions'
+    2) Evaluate the volume => (B,N,X,Y,Z)
+    3) Use soft_argmax to get principal direction => (B,3,X,Y,Z)
+    """
+    device = sh_volume.device
+    Ylm_matrix = _mrtrix_real_sh_basis(directions, lmax=lmax, device=device)
+    signal_vol = evaluate_mrtrix_sh(sh_volume, Ylm_matrix)
+    pdir = soft_argmax_direction(signal_vol, directions, gamma=gamma)
+    return pdir
+
+def sh_angular_loss(
+    shA: torch.Tensor,
+    shB: torch.Tensor,
+    directions: torch.Tensor,
+    lmax: int = 6,
+    gamma: float = 10.0,
+    eps: float = 1e-9) -> torch.Tensor:
+    """
+    For two SH volumes shA, shB of shape (B,28,X,Y,Z),
+    compute the mean angular difference (in radians) between
+    their principal directions using a soft-argmax approach.
+
+    Returns:
+      scalar loss (mean angle over all voxels, batches)
+    """
+
+    # 1) Get principal dir for shA
+    pA = principal_direction_from_sh(shA, directions, lmax=lmax, gamma=gamma)
+    # 2) Get principal dir for shB
+    pB = principal_direction_from_sh(shB, directions, lmax=lmax, gamma=gamma)
+    # shape => (B,3,X,Y,Z)
+
+    # dot product => shape (B,X,Y,Z)
+    dot = (pA * pB).sum(dim=1).clamp(-1.0, 1.0)
+
+    # angle => arccos(dot)
+    angle = torch.acos(dot)
+
+    # mean angle
+    loss = angle.mean()
+    return loss
