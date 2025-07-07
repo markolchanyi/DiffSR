@@ -5,18 +5,16 @@ import numpy as np
 import nibabel as nib
 import torch
 import random
-from ResSR.utils import load_volume, make_rotation_matrix, myzoom_torch, fast_3D_interp_torch, rand_lowrank_mix
+from ResSR.utils import load_volume, make_rotation_matrix, myzoom_torch, fast_3D_interp_torch, rand_lowrank_mix, unpad_tensor
 from ResSR.utils import make_gaussian_kernel, random_crop, random_rotate_sh, batch_rotate_sh, percentile_scaling, sh_norm
-
+from ResSR.sh_utils import rotate_sh_volume
 
 def hr_lr_random_res_generator(training_dir,
                                crop_size=64,
+                               prob_rotate=0.1,
                                rotation_bounds=20,
-                               scaling_bounds=0.15,
-                               nonlin_maxsize=8,
-                               nonlin_std_max=3.0,
+                               prob_patch=0.1,
                                prob_dropout=0.1,
-                               prob_sh_rotate_deform=0.01,
                                lowres_min=1,
                                lowres_max=3,
                                gamma_std=0.1,
@@ -34,6 +32,10 @@ def hr_lr_random_res_generator(training_dir,
     #print("Found training images: ", image_list,"\n")
     n_training = len(image_list)
     print('Found %d cases for training' % n_training)
+
+    ### if padding to avoid edge effects ###
+    padsize=4
+    crop_size += 2*padsize
 
     # Create grid we'll reuse all the time
     if isinstance(crop_size, int):
@@ -79,56 +81,41 @@ def hr_lr_random_res_generator(training_dir,
         hr_cropped = random_crop(hr, crop_size).float()
 
         ###########################################################
-          # SH rotation or deformation (either or to save time) #
+                 # SH ROTATION (either or to save time) #
         ###########################################################
-        if type(prob_sh_rotate_deform) != float:
-            prob_sh_rotate_deform = prob_sh_rotate_deform[0] ## TODO: weird bug
-        if random.random() < prob_sh_rotate_deform:
+        if random.random() < prob_rotate:
             alpha = np.random.uniform(-rotation_bounds, rotation_bounds)
             beta = np.random.uniform(-rotation_bounds, rotation_bounds)
             gamma = np.random.uniform(-rotation_bounds, rotation_bounds)
 
-            spline_spacing = random.randint(8, 15)
-            deform_mag = random.uniform(0.5, 1.5)
+            # deformation params
+            patch_low = 10
+            patch_high = 32
+            px, py, pz =  (np.random.randint(patch_low, patch_high),
+                           np.random.randint(patch_low, patch_high),
+                           np.random.randint(patch_low, patch_high))
 
-            os.makedirs('./tmp', exist_ok=True)
-            nib.save(nib.Nifti1Image(hr_cropped.cpu().numpy(), affine=aff), './tmp/sh_raw.nii.gz')
+            patch_size=(px,py,pz)
+            spacing=np.random.uniform(1, np.max((px,py,pz))/2)
+            warp_scale=np.random.uniform(1,np.max((px,py,pz))/6)
 
-            if random.random() < 0.25:
-                #print("ROTATING!!")
-                cmd = "python ../ResSR/sh_rotation.py"
-                cmd += " -i ./tmp/sh_raw.nii.gz"
-                cmd += " -o ./tmp/sh_dwig.nii.gz"
-                cmd += " --alpha " + str(alpha)
-                cmd += " --beta " + str(beta)
-                cmd += " --gamma " + str(gamma)
-                cmd += " --n_jobs " + str(njobs)
-                os.system(cmd)
-                #print("done!!")
+            hr_rot_def = rotate_sh_volume(hr_cropped.cpu().numpy(),
+                                         (alpha,beta,gamma),
+                                         rotate=True,
+                                         deform_patch=True,
+                                         add_noise=False,
+                                         patch_size=patch_size,
+                                         spacing=spacing,
+                                         warp_scale=spacing)
 
-            else:
-                cmd = "python ../ResSR/sh_deformation.py"
-                cmd += " --in_sh ./tmp/sh_raw.nii.gz"
-                cmd += " --out_sh ./tmp/sh_dwig.nii.gz"
-                cmd += " --spacing " + str(spline_spacing)
-                cmd += " --warp_scale " + str(deform_mag)
-                cmd += " --check_global_jacobian False"
-                cmd += " --patch_only 0"
-                os.system(cmd)
-                #print("done!!")
-
-            hr_rot_def, _ = load_volume('./tmp/sh_dwig.nii.gz')
             hr_rot_def = hr_rot_def.astype(float)
-            hr_rot_def = np.squeeze(hr_rot_def)
             hr_rot_def = torch.tensor(hr_rot_def, device=device).float()
             hr_rot_def[torch.isnan(hr_rot_def)] = 0.0
             hr_rot_def[torch.isinf(hr_rot_def)] = 0.0
 
             hr_cropped=hr_rot_def
-            shutil.rmtree('./tmp')
 
         # IQR scale the l=0 isotropic component
-        #hr_cropped = adc_sh_norm(hr_cropped, l0_index=0, k=2.0, new_min=-1.0, new_max=1.0, threshold=0.01)
         hr_cropped = sh_norm(hr_cropped,l0_index=1)
         hr_cropped = torch.clamp(hr_cropped, min=-1, max=1)
 
@@ -167,13 +154,14 @@ def hr_lr_random_res_generator(training_dir,
         hr_bias = hr_gamma.detach().clone()
         hr_bias[...,0] = hr_gamma[...,0] * bias_lowb
         hr_bias[...,1] = hr_gamma[...,1] * bias_l0
-
+        #hr_bias[...,0] = hr_gamma[...,0] * 1
+        #hr_bias[...,1] = hr_gamma[...,1] * 1
 
         ## Dir-specific bias ##
         ## approximated with low-rank mixing for now TODO
-        if random.random() < 0.25:
+        if random.random() < 0.1:
             #print("applying bias")
-            hr_bias[...,1:] = rand_lowrank_mix(hr_bias[...,1:], rank=4, scale=0.025)
+            hr_bias[...,1:] = rand_lowrank_mix(hr_bias[...,1:], rank=2, scale=0.04)
             #print("done")
 
         ### RANDOM DROPOUT
@@ -185,9 +173,6 @@ def hr_lr_random_res_generator(training_dir,
         }
 
         # Randomly drop-out higher-order SH l's
-        if type(prob_dropout) != float:
-            prob_dropout = prob_dropout[0] # TODO again...weird
-        #print("dropout: ", prob_dropout)
         rand = random.random()
         if rand < prob_dropout/2:
             hr_bias[...,sh_mapping[4]] = 0
@@ -222,13 +207,6 @@ def hr_lr_random_res_generator(training_dir,
 
         # Now we add noise (at low resolution, as will happen at test time) 50 50 gaussian or Rician
         noise_std = noise_std_min + (noise_std_max - noise_std_min) * torch.rand([1], device=device)
-
-        # Rician
-        #noise_real = noise_std * torch.randn(lr.shape, device=device)
-        #noise_imag = noise_std * torch.randn(lr.shape, device=device)
-
-        #lr_noisy = torch.sqrt((lr + noise_real)**2 + (noise_imag)**2)
-
         lr_noisy = lr + noise_std * torch.randn(lr.shape, device=device)
 
         # We also renormalize here (as we do at test time!)
@@ -239,28 +217,67 @@ def hr_lr_random_res_generator(training_dir,
 
         input_nopatched = input.detach().clone()
 
-        ## RANDOM PATCHING
-        if random.random() < 0.35:
-            os.makedirs('./tmp', exist_ok=True)
-            nib.save(nib.Nifti1Image(input.cpu().numpy(), affine=aff), './tmp/sh_raw.nii.gz')
-            #print("starting patch")
-            cmd = "python ../ResSR/sh_deformation.py"
-            cmd += " --in_sh ./tmp/sh_raw.nii.gz"
-            cmd += " --out_sh ./tmp/sh_dwig.nii.gz"
-            cmd += " --spacing 1"
-            cmd += " --warp_scale 1"
-            cmd += " --check_global_jacobian False"
-            cmd += " --patch_only 1"
-            os.system(cmd)
-            #print("done")
-            input_patched, _ = load_volume('./tmp/sh_dwig.nii.gz')
+        ### MISMATCHED PATCHING ###
+        if random.random() < prob_patch:
+            drift_alpha = np.random.uniform(0.0,360.0)
+            drift_beta = np.random.uniform(0.0,360.0)
+            drift_gamma = np.random.uniform(0.0,180.0)
+
+            # deformation params
+            patch_low = 10
+            patch_high = 20
+            px, py, pz =  (np.random.randint(patch_low, patch_high),
+                           np.random.randint(patch_low, patch_high),
+                           np.random.randint(patch_low, patch_high))
+
+            patch_size=(px,py,pz)
+            spacing=np.random.uniform(1, np.max((px,py,pz))/2)
+            warp_scale=np.random.uniform(1,np.max((px,py,pz))/6)
+
+
+            #### drift parameters (set high) ####
+            drift_patch_low = 20
+            drift_patch_high = 45
+            dpx, dpy, dpz =  (np.random.randint(drift_patch_low, drift_patch_high),
+                           np.random.randint(drift_patch_low, drift_patch_high),
+                           np.random.randint(drift_patch_low, drift_patch_high))
+
+            drift_patch_size=(dpx,dpy,dpz)
+
+            prob_drift=0.5
+            apply_random_drift=False
+
+            if random.random() < prob_drift:
+                apply_random_drift=True
+
+            input_patched = rotate_sh_volume(input.cpu().numpy(),
+                                             (drift_alpha,drift_beta,drift_gamma),
+                                             rotate=False,
+                                             deform_patch=True,
+                                             apply_random_drift=apply_random_drift,
+                                             add_noise=True,
+                                             patch_size=patch_size,
+                                             drift_patch_size=drift_patch_size,
+                                             spacing=spacing,
+                                             warp_scale=spacing)
+
             input_patched = input_patched.astype(float)
-            input_patched = np.squeeze(input_patched)
             input_patched = torch.tensor(input_patched, device=device).float()
             input_patched[torch.isnan(input_patched)] = 0.0
             input_patched[torch.isinf(input_patched)] = 0.0
             input=input_patched
-            #shutil.rmtree('./tmp')
+
+
+        ##### random mismatched patch-wise dropout
+        if random.random() < 0:
+            block_size_x = np.random.randint(0, 12)
+            block_size_y = np.random.randint(0, 12)
+            block_size_z = np.random.randint(0, 12)
+            X,Y,Z = input.shape[:3]
+            z = np.random.randint(0, Z - block_size_z)
+            y = np.random.randint(0, Y - block_size_y)
+            x = np.random.randint(0, X - block_size_x)
+            input[x:x+block_size_x, y:y+block_size_y, z:z+block_size_z,:] = 0
 
         input = input.float()
         target = target.float()
@@ -273,19 +290,21 @@ def hr_lr_random_res_generator(training_dir,
         target[torch.isinf(target)] = 0.0
         target = torch.clamp(target, min=-1, max=1)
 
-        ##### TEST SAVE
-        #print("Saving intermediates...")
-        #os.makedirs("./tmp",exist_ok=True)
-        #input_npy = input_nopatched.cpu().numpy()
-        #nib.save(nib.Nifti1Image(input_npy, affine=np.eye(4)), './tmp/input_nopatched.nii.gz')
-        #input_npy = input.cpu().numpy()
-        #nib.save(nib.Nifti1Image(input_npy, affine=np.eye(4)), './tmp/input.nii.gz')
-        #target_npy = target.cpu().numpy()
-        #nib.save(nib.Nifti1Image(target_npy, affine=np.eye(4)), './tmp/target.nii.gz')
-        #print("done")
-        #####
-
         input = input.permute(3, 0, 1, 2)
         target = target.permute(3, 0, 1, 2)
+
+        ### unpad edges ###
+        input = unpad_tensor(input, padsize)
+        target = unpad_tensor(target, padsize)
+
+        ##### TEST SAVE
+        #print("Saving intermediates...")
+        #os.makedirs("./tmp_gen",exist_ok=True)
+        #input_npy = input.permute(1, 2, 3, 0).cpu().numpy()
+        #nib.save(nib.Nifti1Image(input_npy, affine=np.eye(4)), './tmp_gen/input.nii.gz')
+        #target_npy = target.permute(1, 2, 3, 0).cpu().numpy()
+        #nib.save(nib.Nifti1Image(target_npy, affine=np.eye(4)), './tmp_gen/target.nii.gz')
+        #print("done")
+        #####
 
         yield input, target

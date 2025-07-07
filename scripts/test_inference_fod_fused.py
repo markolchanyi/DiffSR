@@ -1,9 +1,10 @@
 import torch
-import sys
+import os,sys
 
 sys.path.append('/autofs/space/nicc_003/users/olchanyi/DiffSR')
-from ResSR.models_fused import SRmodel
-from ResSR.utils import load_volume, save_volume, align_volume_to_ref, myzoom_torch, percentile_scaling, sh_norm
+
+from ResSR.models_s2trans_unet import S2UNetGlobal_MRtrix
+from ResSR.utils import load_volume, save_volume, align_volume_to_ref, myzoom_torch, percentile_scaling, sh_norm, pad_to_stride_torch, unpad_tensor
 import numpy as np
 import argparse
 
@@ -35,15 +36,18 @@ def main():
     n_channels = 28
 
     print('Preparing model and loading weights')
-    #model = SRmodel(num_filters, num_residual_blocks, kernel_size, use_global_residual).to(device)
-    model = SRmodel(num_filters=num_filters,
-                num_residual_blocks=num_residual_blocks,
-                kernel_size=kernel_size,
-                use_global_residual=use_global_residual,
-                num_filters_nonang=64,
-                num_residual_blocks_nonang=12).to(device)
-    checkpoint = torch.load(model_file)
-    model.load_state_dict(checkpoint['model_state_dict'])
+
+    model = S2UNetGlobal_MRtrix().to(device)
+
+    # run one dummy forward so all buffers/weights are allocated
+    with torch.no_grad():
+        _ = model(torch.zeros(1, 29, 64, 64, 64, device=device))
+
+    checkpoint = torch.load(model_file, map_location=device)
+    model.load_state_dict(checkpoint["model_state_dict"])      # strict=True by default
+
+    #checkpoint = torch.load(model_file)
+    #model.load_state_dict(checkpoint['model_state_dict'])
 
     print('Loading input volume and normalizing to [0,1]')
     image, aff = load_volume(input_file)
@@ -78,20 +82,31 @@ def main():
     upscaled_unpermuted = upscaled.clone()
     upscaled = upscaled.permute(3, 0, 1, 2)
 
-    print("shape: ", upscaled.shape)
-    upscaled[0,...] = upscaled[0,...] * 1.5
-    upscaled[1,...] = upscaled[1,...] * 2
-    upscaled[2:,...] = upscaled[2:,...] * 2
+    #print("shape: ", upscaled.shape)
+    #upscaled[0,...] = (upscaled[0,...]*10) + 0.2
+    #upscaled[1,...] = (upscaled[1,...]*10) + 0.2
+    #upscaled[2:,...] = upscaled[2:,...] * 10
+
+    upscaled, pads = pad_to_stride_torch(upscaled, stride=16)
+    print("shape of CNN input: ", upscaled[None, :].shape)
 
     with torch.no_grad():
         pred = model(upscaled[None, :])
 
     pred = torch.squeeze(pred)
+
+    gt_var  = (pred[2:,...] - upscaled[2:,...]).abs().mean().item()
+    print("mean |GT – LR| =", gt_var)
+
+    pred = unpad_tensor(pred, pads)
+    upscaled = unpad_tensor(upscaled, pads)
+
     pred = pred.permute(1,2,3,0)
+    upscaled = upscaled.permute(1,2,3,0)
     print('\nSaving to disk')
     #print("Mean is: ", np.mean(pred.detach().cpu().numpy()))
     save_volume(pred.detach().cpu().numpy(), aff_upscaled, output_file)
-    #save_volume(upscaled_unpermuted.detach().cpu().numpy(), aff_upscaled, "./test_upscaled.nii.gz")
+    save_volume(upscaled.detach().cpu().numpy(), aff_upscaled, os.path.join(os.path.dirname(output_file),"upscaled.nii.gz"))
 
     print('All done!')
 

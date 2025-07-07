@@ -522,6 +522,57 @@ def warp_single_channel(channel, displacement_field):
     return warped
 
 
+def remove_overlapping_rois(rois, return_mask=False):
+    """
+    Greedy removal of overlapping 3-D axis-aligned ROIs.
+
+    Parameters
+    ----------
+    rois : (N,6) array-like
+    return_mask : bool, default False
+        • False  →  just the pruned ROIs (M,6)
+        • True   →  (pruned_rois, keep_mask)
+
+    """
+    boxes  = np.asarray(rois)
+    N      = len(boxes)
+    start  = boxes[:, :3]
+    end    = boxes[:, 3:]
+
+    # pair-wise overlap test
+    m = ((start[:, None, :] < end[None, :, :]) &
+         (start[None, :, :] < end[:, None, :])).all(-1)
+    np.fill_diagonal(m, False)
+
+    keep = np.ones(N, bool)
+    for i in range(N):
+        if keep[i]:
+            keep[m[i] & keep] = False
+
+    pruned = boxes[keep]
+    return (pruned, keep) if return_mask else pruned
+
+
+def prune_rois_and_related(rois, companions):
+    """
+    Prunes ROIs and the companion list so they stay aligned.
+
+    Parameters
+    ----------
+    rois       : (N,6) array-like
+    companions : sequence length N
+                 (could be list, ndarray, list-of-arrays, …)
+
+    Returns
+    -------
+    pruned_rois       : (M,6) ndarray
+    pruned_companions : list length M
+    """
+    pruned_rois, keep = remove_overlapping_rois(rois, return_mask=True)
+    pruned_companions = [c for c, k in zip(companions, keep) if k]
+    return pruned_rois, pruned_companions
+
+
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(
@@ -551,6 +602,11 @@ if __name__ == "__main__":
     if nCoeffs != 29:
         raise ValueError(f"Expected 28 + 1 SH coeffs + mean lowb for even-l up to lmax=6, got {nCoeffs}.")
 
+    # only for patching
+    rand_patch_num = random.randint(1, 3)
+    patch_dispfield_list = []
+    patch_coords_list = []
+
     if not args.patch_only:
         max_attempts = 30
         attempt = 0
@@ -567,77 +623,92 @@ if __name__ == "__main__":
             disp_field = np.zeros((X,Y,Z,3), dtype=np.float32)
 
     if args.patch_only:
-        px = np.random.randint(8, 18)
-        py = np.random.randint(8, 18)
-        pz = np.random.randint(8, 18)
-        x0 = np.random.randint(0, max(X - px, 1))
-        y0 = np.random.randint(0, max(Y - py, 1))
-        z0 = np.random.randint(0, max(Z - pz, 1))
+        for i in range(rand_patch_num):
+            px = np.random.randint(8, 16)
+            py = np.random.randint(8, 16)
+            pz = np.random.randint(8, 16)
+            x0 = np.random.randint(0, max(X - px, 1))
+            y0 = np.random.randint(0, max(Y - py, 1))
+            z0 = np.random.randint(0, max(Z - pz, 1))
 
-        x1 = x0 + px
-        y1 = y0 + py
-        z1 = z0 + pz
+            x1 = x0 + px
+            y1 = y0 + py
+            z1 = z0 + pz
 
-        #meth = np.random.choice(["bspline", "shear", "both"])
-        meth = "both"
+            #meth = np.random.choice(["bspline", "shear", "both"])
+            meth = "both"
 
-        max_attempts = 200
-        attempt = 0
-        while attempt < max_attempts:
-            disp_local = np.zeros((px,py,pz,3), dtype=np.float32)
+            max_attempts = 200
+            attempt = 0
+            while attempt < max_attempts:
+                disp_local = np.zeros((px,py,pz,3), dtype=np.float32)
 
-            if meth in ["bspline", "both"]:
-                # Local B-spline
-                #print("building spline")
-                local_disp_bspline = build_local_bspline_displacement(
-                    vol_shape=(X, Y, Z),
-                    patch_min_corner=(x0, y0, z0),
-                    patch_size=(px, py, pz),
-                    spacing=np.random.uniform(1, np.max((px,py,pz))/2),
-                    warp_scale=np.random.uniform(1,np.max((px,py,pz))/2),
-                    boundary_blend=2)
-                disp_local += local_disp_bspline
+                if meth in ["bspline", "both"]:
+                    # Local B-spline
+                    #print("building spline")
+                    local_disp_bspline = build_local_bspline_displacement(
+                        vol_shape=(X, Y, Z),
+                        patch_min_corner=(x0, y0, z0),
+                        patch_size=(px, py, pz),
+                        spacing=np.random.uniform(1, np.max((px,py,pz))/2),
+                        warp_scale=np.random.uniform(1,np.max((px,py,pz))/2),
+                        boundary_blend=2)
+                    disp_local += local_disp_bspline
 
-            if meth in ["shear", "both"]:
-                sx = np.random.uniform(-0.25, 0.25)
-                sy = np.random.uniform(-0.25, 0.25)
-                sz = np.random.uniform(-0.25, 0.25)
-                local_disp_shear = build_local_shear_displacement(
-                    vol_shape=(X, Y, Z),
-                    patch_min_corner=(x0, y0, z0),
-                    patch_size=(px, py, pz),
-                    shear_factors=(sx, sy, sz),
-                    boundary_blend=2)
-                disp_local += local_disp_shear
+                if meth in ["shear", "both"]:
+                    sx = np.random.uniform(-0.25, 0.25)
+                    sy = np.random.uniform(-0.25, 0.25)
+                    sz = np.random.uniform(-0.25, 0.25)
+                    local_disp_shear = build_local_shear_displacement(
+                        vol_shape=(X, Y, Z),
+                        patch_min_corner=(x0, y0, z0),
+                        patch_size=(px, py, pz),
+                        shear_factors=(sx, sy, sz),
+                        boundary_blend=2)
+                    disp_local += local_disp_shear
 
-            disp_field = disp_local
-            attempt += 1
+                disp_field = disp_local
+                attempt += 1
 
-            if check_jacobian_all_positive(disp_local):
-                break
-        else:
-            #print("max amount of tries for local field reached")
-            disp_field = np.zeros_like(disp_local)
-        # simply add loc disp to glob disp
-        #disp_field += disp_local
+                if check_jacobian_all_positive(disp_local):
+                    break
+            else:
+                #print("max amount of tries for local field reached")
+                disp_field = np.zeros_like(disp_local)
+            # simply add loc disp to glob disp
+            #disp_field += disp_local
+            patch_dispfield_list.append(disp_field)
+            patch_coords_list.append([x0, y0, z0, x1, y1, z1])
 
 
     if args.patch_only:
         warped_sh = sh_data
 
-        warped_sh_patch = warp_and_reorient_sh_volume_evenl(sh_data[x0:x1, y0:y1, z0:z1, 1:], disp_field, lmax=args.lmax)
-        warped_lowb_patch = warp_single_channel(sh_data[x0:x1, y0:y1, z0:z1, 0], disp_field)
-        warped_lowb_patch = warped_lowb_patch[..., np.newaxis]
+        # remove any overlapping rois
+        #print("orig_length: ", len(patch_coords_list))
+        patch_coords_list_ok, patch_dispfield_list_ok = prune_rois_and_related(patch_coords_list, patch_dispfield_list)
+        #print("length of trimmed patches: ", len(patch_coords_list_ok))
+        #print("length of trimmed patches: ", len(patch_dispfield_list_ok))
+        #print("old coords: ", patch_coords_list)
+        #print("new coords: ", patch_coords_list_ok)
+        for i in range(len(patch_coords_list_ok)):
+            pcoords = patch_coords_list_ok[i]
+            x0, y0, z0, x1, y1, z1 = pcoords
+            #print("x0: ", x0, " y0: ", y0, " z0: ", z0, " x1: ", x1, " y1: ", y1, " z1: ", z1)
 
-        warped_sh_patch = np.concatenate([warped_lowb_patch, warped_sh_patch], axis=-1)
+            warped_sh_patch = warp_and_reorient_sh_volume_evenl(sh_data[x0:x1, y0:y1, z0:z1, 1:], patch_dispfield_list_ok[i], lmax=args.lmax)
+            warped_lowb_patch = warp_single_channel(sh_data[x0:x1, y0:y1, z0:z1, 0], patch_dispfield_list_ok[i])
+            warped_lowb_patch = warped_lowb_patch[..., np.newaxis]
 
-        # sprinkle in a bit more noise into the patch just for funsies
-        noise_std_min = 0.0
-        noise_std_max = 0.01
-        noise_std = noise_std_min + (noise_std_max - noise_std_min) * np.random.rand()
-        warped_sh_patch_noisy = warped_sh_patch + noise_std * np.random.randn(*warped_sh_patch.shape)
+            warped_sh_patch = np.concatenate([warped_lowb_patch, warped_sh_patch], axis=-1)
 
-        warped_sh[x0:x1, y0:y1, z0:z1, :] = warped_sh_patch_noisy
+            # sprinkle in a bit more noise into the patch just for funsies
+            noise_std_min = 0.0
+            noise_std_max = 0.01
+            noise_std = noise_std_min + (noise_std_max - noise_std_min) * np.random.rand()
+            warped_sh_patch_noisy = warped_sh_patch + noise_std * np.random.randn(*warped_sh_patch.shape)
+
+            warped_sh[x0:x1, y0:y1, z0:z1, :] = warped_sh_patch_noisy
     else:
         warped_sh = warp_and_reorient_sh_volume_evenl(sh_data[...,1:], disp_field, lmax=args.lmax)
         warped_lowb = warp_single_channel(sh_data[...,0], disp_field)

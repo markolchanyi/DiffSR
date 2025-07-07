@@ -6,6 +6,7 @@ import os
 import torch
 import math
 from torch.nn import L1Loss, MSELoss
+import torch.nn.functional as F
 from scipy.interpolate import RegularGridInterpolator as rgi
 from scipy.ndimage import gaussian_filter as gauss_filt
 from scipy.special import lpmv
@@ -184,14 +185,6 @@ def make_gaussian_kernel(sigma):
 
     return kernel
 
-
-#
-#
-
-#
-#
-
-#
 #
 #
 #
@@ -546,36 +539,49 @@ def gradient_loss(pred, target):
 
 
 
-def mixed_loss(pred, target, l1_loss_fn, l2_loss_fn, ang_multiplier=None, ang_dirs=None, alpha=0.5, beta=0.1, multiplier=1.0, l0_multiplier=None):
+#def mixed_loss(pred, target, l1_loss_fn, l2_loss_fn, ang_multiplier=None, ang_dirs=None, alpha=0.5, beta=0.1, multiplier=1.0, l0_multiplier=None):
+#
+#    if l0_multiplier is None:
+#        l1_loss = l1_loss_fn(pred, target)
+#        #l2_loss_l0 = l2_loss_fn(pred[:,0:1,...], target[:,0:1,...])
+#        #l2_loss_l1 = l2_loss_fn(pred[:,1:6,...], target[:,1:6,...])
+#        #print("L2 loss l0: ", l2_loss_l0)
+#        #print("L2 loss l1: ", l2_loss_l1)
+#        #print(" ")
+#        l2_loss = l2_loss_fn(pred, target)
+#        #print("L2 loss: ", l2_loss)
+#        #grad_loss = gradient_loss(pred, target)
+#    else:
+#        l1_loss_l0 = l1_loss_fn(pred[:,0:1,...], target[:,0:1,...])
+#        #print("L1 loss 0: ", l1_loss_l0)
+#        l2_loss_l0 = l2_loss_fn(pred[:,0:1,...], target[:,0:1,...])
+#        l1_loss_other = l1_loss_fn(pred[:,1:,...], target[:,1:,...])
+#        #print("L1 loss 1+: ", l1_loss_other)
+#        l2_loss_other = l2_loss_fn(pred[:,1:,...], target[:,1:,...])
+#        #print("SHAPE: ", target.shape[1])
+#        l1_loss = ((l1_loss_l0 * (l0_multiplier/(target.shape[1]-1))) + l1_loss_other)/2
+#        l2_loss = ((l2_loss_l0 * (l0_multiplier/(target.shape[1]-1))) + l2_loss_other)/2
 
-    if l0_multiplier is None:
-        l1_loss = l1_loss_fn(pred, target)
-        #l2_loss_l0 = l2_loss_fn(pred[:,0:1,...], target[:,0:1,...])
-        #l2_loss_l1 = l2_loss_fn(pred[:,1:6,...], target[:,1:6,...])
-        #print("L2 loss l0: ", l2_loss_l0)
-        #print("L2 loss l1: ", l2_loss_l1)
-        #print(" ")
-        l2_loss = l2_loss_fn(pred, target)
-        #print("L2 loss: ", l2_loss)
-        #grad_loss = gradient_loss(pred, target)
-    else:
-        l1_loss_l0 = l1_loss_fn(pred[:,0:1,...], target[:,0:1,...])
-        #print("L1 loss 0: ", l1_loss_l0)
-        l2_loss_l0 = l2_loss_fn(pred[:,0:1,...], target[:,0:1,...])
-        l1_loss_other = l1_loss_fn(pred[:,1:,...], target[:,1:,...])
-        #print("L1 loss 1+: ", l1_loss_other)
-        l2_loss_other = l2_loss_fn(pred[:,1:,...], target[:,1:,...])
-        #print("SHAPE: ", target.shape[1])
-        l1_loss = ((l1_loss_l0 * (l0_multiplier/(target.shape[1]-1))) + l1_loss_other)/2
-        l2_loss = ((l2_loss_l0 * (l0_multiplier/(target.shape[1]-1))) + l2_loss_other)/2
+#    if ang_multiplier is not None and ang_dirs is not None:
+#        ang_loss = sh_angular_loss(pred[:,1:,...], target[:,1:,...], ang_dirs) # remember to discard lowb :)
 
-    if ang_multiplier is not None and ang_dirs is not None:
-        ang_loss = sh_angular_loss(pred[:,1:,...], target[:,1:,...], ang_dirs) # remember to discard lowb :)
+#    #tot_loss = (alpha * l1_loss + (1 - alpha) * l2_loss + ang_loss * ang_multiplier) * multiplier
+#    lap_loss = laplacian_loss(pred, target)
+#    tot_loss = (alpha * l1_loss + (1 - alpha) * l2_loss + lap_loss * ang_multiplier) * multiplier
+#    return tot_loss, alpha * l1_loss, (1-alpha) * l2_loss, lap_loss * ang_multiplier * multiplier
 
-    tot_loss = (alpha * l1_loss + (1 - alpha) * l2_loss + ang_loss * ang_multiplier) * multiplier
+def mixed_loss(pred, target, alpha=1.0, multiplier=100.0, ang_multiplier=5000):
 
-    return tot_loss, alpha * l1_loss, (1-alpha) * l2_loss, ang_loss * ang_multiplier * multiplier
+    l1_loss_fn = L1Loss()
+    l2_loss_fn = MSELoss()
 
+    l1_loss = l1_loss_fn(pred, target)
+    l2_loss = l2_loss_fn(pred, target)
+
+    lap_loss = laplacian_loss(pred, target)
+
+    tot_loss = (l2_loss * multiplier) + (lap_loss * ang_multiplier)
+    return tot_loss, l2_loss * multiplier
 
 def random_crop(hr, crop_size):
     # hr is expected to be of shape (N, N, N, C)
@@ -910,6 +916,8 @@ def sh_norm(sh_tensor, l0_index=1):
     lowb = sh_tensor[..., 0]
     l0 = sh_tensor[..., 1]
     l2 = sh_tensor[..., 2:7]
+    l4=sh_tensor[..., 7:16]
+    l6=sh_tensor[..., 16:]
 
     mask_l0 = (l0 > 0.001)
     mask_lowb = (lowb > 0.001)
@@ -917,29 +925,57 @@ def sh_norm(sh_tensor, l0_index=1):
     lowb_filtered = lowb[mask_lowb]
     l0_filtered = l0[mask_l0]
     l2_filtered = l2[mask_l0]
+    l4_filtered = l4[mask_l0]
+    l6_filtered = l6[mask_l0]
 
+    lowb_std = torch.std(lowb_filtered)
+    l0_std = torch.std(l0_filtered)
+    #l2_std = torch.std(l2_filtered)
+    #l4_std = torch.std(l4_filtered)
+    #l6_std = torch.std(l6_filtered)
 
-    l2_std = torch.std(l2_filtered)
+    lowb_mean = torch.mean(lowb_filtered)
+    l0_mean = torch.mean(l0_filtered)
+    #l2_mean = torch.mean(l2_filtered)
+    #l4_mean = torch.mean(l4_filtered)
+    #l6_mean = torch.mean(l6_filtered)
 
-    log_l0_mean = torch.mean(torch.log(l0_filtered))
-    log_l0_std = torch.std(torch.log(l0_filtered))
-    l0_std = (torch.exp(log_l0_std**2) - 1)*(torch.exp(2*log_l0_mean + log_l0_std**2))
+    #log_l0_mean = torch.mean(torch.log(l0_filtered))
+    #log_l0_std = torch.std(torch.log(l0_filtered))
+    #l0_std = (torch.exp(log_l0_std**2) - 1)*(torch.exp(2*log_l0_mean + log_l0_std**2))
 
-    log_lowb_mean = torch.mean(torch.log(lowb_filtered))
-    log_lowb_std = torch.std(torch.log(lowb_filtered))
-    lowb_std = (torch.exp(log_lowb_std**2) - 1)*(torch.exp(2*log_lowb_mean + log_lowb_std**2))
+    #log_lowb_mean = torch.mean(torch.log(lowb_filtered))
+    #log_lowb_std = torch.std(torch.log(lowb_filtered))
+    #lowb_std = (torch.exp(log_lowb_std**2) - 1)*(torch.exp(2*log_lowb_mean + log_lowb_std**2))
 
 
     # assume norm and log norm for distributions of lowb/l0 and l2+
     # assume zero mean for l2+ (empirirically true)
-    l2_scale = 1/(15*l2_std)
-    l0_scale = 1/(12*torch.sqrt(l0_std))
-    lowb_scale = 1/(12*torch.sqrt(lowb_std))
+    #l6_scale = 1/(1*l6_std)
+    #l4_scale = 1/(2000*l4_std)
+    #l2_scale = 1/(5*l2_std)
+    #l0_scale = 1/(20000*l0_std)
+    #lowb_scale = 1/(10*lowb_std)
+    #l0_scale = 1/(10*torch.sqrt(l0_std))
+    #lowb_scale = 1/(20*torch.sqrt(lowb_std))
+
+    #print("lowb scale: ", lowb_scale)
+    #print("l0 scale: ", l0_scale)
 
     sh_tensor_normalized = sh_tensor.detach().clone()
-    sh_tensor_normalized[..., 0] = sh_tensor_normalized[..., 0]*lowb_scale #lowb
-    sh_tensor_normalized[..., 1] = sh_tensor_normalized[..., 1]*l0_scale #l0
-    sh_tensor_normalized[..., 2:] = sh_tensor_normalized[..., 2:]*l2_scale #l2+
+
+    #sh_tensor_normalized[..., 0] = (sh_tensor_normalized[..., 0]-lowb_mean)/(10*lowb_std)+0.5 #lowb
+    #sh_tensor_normalized[..., 1] = (sh_tensor_normalized[..., 1]-l0_mean)/(10*l0_std)+0.5 #l0
+    #sh_tensor_normalized[..., 2:7] = (sh_tensor_normalized[..., 2:7]-l2_mean)/(10*l0_std)
+    #sh_tensor_normalized[..., 7:16] = (sh_tensor_normalized[..., 7:16]-l4_mean)/(10*l0_std)
+    #sh_tensor_normalized[..., 16:] = (sh_tensor_normalized[..., 16:]-l6_mean)/(10*l0_std)
+
+    sh_tensor_normalized[..., 0] = (sh_tensor_normalized[..., 0]-lowb_mean)/(10*lowb_std)+0.5 #lowb
+    sh_tensor_normalized[..., 1] = (sh_tensor_normalized[..., 1]-l0_mean)/(10*l0_std)+0.5 #l0
+    sh_tensor_normalized[..., 2:] = (sh_tensor_normalized[..., 2:])/(10*l0_std)
+    #sh_tensor_normalized[..., 2:7] = (sh_tensor_normalized[..., 2:7]-l2_mean)/(10*l0_std)
+    #sh_tensor_normalized[..., 7:16] = (sh_tensor_normalized[..., 7:16]-l4_mean)/(10*l0_std)
+    #sh_tensor_normalized[..., 16:] = (sh_tensor_normalized[..., 16:]-l6_mean)/(10*l0_std)
 
     return sh_tensor_normalized
 
@@ -1208,6 +1244,9 @@ def sh_angular_loss(
     pB = principal_direction_from_sh(shB, directions, lmax=lmax, gamma=gamma)
     # shape => (B,3,X,Y,Z)
 
+    # assuming A is pred
+    tvloss = vec_tv(pA)
+
     # dot product => shape (B,X,Y,Z)
     dot = (pA * pB).sum(dim=1).clamp(-1.0, 1.0)
 
@@ -1216,4 +1255,111 @@ def sh_angular_loss(
 
     # mean angle
     loss = angle.mean()
-    return loss
+
+    #print("angular loss is: ", loss)
+    #print("TV loss is: ", tvloss)
+
+    tot_ang_loss = loss + tvloss*100
+
+    return tot_ang_loss
+
+def vec_tv(pev: torch.Tensor) -> torch.Tensor:
+    """
+    Isotropic TV on a field of *unit* 3-vectors.
+    pev shape: (B, 3, X, Y, Z)
+    """
+    # make sure the vectors are unit-length
+    pev = F.normalize(pev, dim=1, eps=1e-6)
+
+    def _delta(a, b):
+        # a, b : (B,3, …)
+        cos = torch.clamp((a * b).sum(1).abs(), 0.0, 1.0)  # |v1·v2|
+        return 1.0 - cos                                   # 0 if parallel, 1 if orthogonal
+
+    tv  = _delta(pev[..., 1:],  pev[..., :-1]).mean()      # X-axis   (Δx)
+    tv += _delta(pev[..., :, 1:], pev[..., :, :-1]).mean() # Y-axis   (Δy)
+    tv += _delta(pev[..., :, :, 1:], pev[..., :, :, :-1]).mean() # Z-axis (Δz)
+    return tv / 3.0
+
+def pad_to_stride_torch(vol: torch.Tensor, stride: int = 16):
+    """
+    Zero–pad a (C, X, Y, Z) tensor so X, Y, Z are multiples of `stride`.
+
+    Returns
+    -------
+    vol_padded : torch.Tensor
+        Padded tensor on the same device as `vol`.
+    pad_sizes  : tuple
+        ((px_l, px_r), (py_l, py_r), (pz_l, pz_r)) –  use with `unpad_tensor`.
+    """
+    _, X, Y, Z = vol.shape
+
+    def split_pad(n):
+        r = (-n) % stride
+        return r // 2, r - r // 2          # (left, right)
+
+    px = split_pad(X)
+    py = split_pad(Y)
+    pz = split_pad(Z)
+
+    # torch.nn.functional.pad order for 4-D/5-D is (W, H, D, …):
+    pad_tuple = (pz[0], pz[1],              # Z  (last dim)
+                 py[0], py[1],              # Y
+                 px[0], px[1])              # X
+    vol_padded = F.pad(vol, pad_tuple, mode="constant", value=0)
+
+    return vol_padded, (px, py, pz)
+
+
+def unpad_tensor(vol_padded: torch.Tensor, pad_sizes):
+    """Crop the tensor back to its original size."""
+    if np.isscalar(pad_sizes):
+        return vol_padded[:, pad_sizes:-pad_sizes, pad_sizes:-pad_sizes, pad_sizes: -pad_sizes]
+    else:
+        (px_l, px_r), (py_l, py_r), (pz_l, pz_r) = pad_sizes
+        if px_r == 0: px_r = None
+        if py_r == 0: py_r = None
+        if pz_r == 0: pz_r = None
+        return vol_padded[:,                             # keep all channels
+                          px_l: -px_r,                   # X
+                          py_l: -py_r,                   # Y
+                          pz_l: -pz_r]                   # Z
+
+
+# ------------------------------------------------------------------
+# 3-D 6-neighbour Laplacian kernel
+# ------------------------------------------------------------------
+_LAPLACIAN_KERNEL = torch.tensor(
+    [[[0, 0, 0],
+      [0, 1, 0],
+      [0, 0, 0]],            # z-1 slice
+
+     [[0, 1, 0],
+      [1,-6, 1],
+      [0, 1, 0]],            # z   slice
+
+     [[0, 0, 0],
+      [0, 1, 0],
+      [0, 0, 0]]],           # z+1 slice
+    dtype=torch.float32).unsqueeze(0).unsqueeze(0)  # shape (1,1,3,3,3)
+
+
+def laplacian3d(x: torch.Tensor) -> torch.Tensor:
+    """
+    Per-channel 3-D Laplacian.
+    x: (B,C,D,H,W)
+    returns: same shape
+    """
+    B, C, *_ = x.shape
+    k = _LAPLACIAN_KERNEL.to(x)             # move to same device/dtype
+    k = k.repeat(C, 1, 1, 1, 1)             # (C,1,3,3,3)
+    return F.conv3d(x, k, padding=1, groups=C)
+
+
+def laplacian_loss(pred: torch.Tensor,
+                   target: torch.Tensor,
+                   w: float = 0.05) -> torch.Tensor:
+    """
+    L1 loss on Laplacian-filtered volumes.
+    """
+    return w * F.mse_loss(laplacian3d(pred), laplacian3d(target))

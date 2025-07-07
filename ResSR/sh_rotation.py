@@ -166,6 +166,7 @@ if __name__ == '__main__':
     parser.add_argument('--beta', type=float, default=0.0, help='Rotation angle around y-axis in degrees.')
     parser.add_argument('--gamma', type=float, default=0.0, help='Rotation angle around z-axis in degrees.')
     parser.add_argument('--lmax', type=int, default=6, help='Maximum SH order.')
+    parser.add_argument('--bulk_rotation', type=int, default=1, help='Apply bulk rotation')
     parser.add_argument('--n_jobs', type=int, default=-1, help='Number of parallel jobs. -1 uses all available cores.')
 
     args = parser.parse_args()
@@ -177,6 +178,7 @@ if __name__ == '__main__':
     gamma = args.gamma
     n_jobs = args.n_jobs
     output_file = args.output
+    bulk_rotation = args.bulk_rotation
 
     n_coeffs = num_sh_coeffs(lmax)
     sh_img = nib.load(str(sh_img_path))
@@ -230,27 +232,30 @@ if __name__ == '__main__':
 
 
     ##### bulk rotation #####
-    rotation_matrix = compute_rotation_matrix(alpha, beta, gamma)
-    inverse_rotation_matrix = rotation_matrix.T
+    if bulk_rotation != 1:
+        rotation_matrix = compute_rotation_matrix(alpha, beta, gamma)
+        inverse_rotation_matrix = rotation_matrix.T
 
-    center = np.array(rotated_real_sh_coeffs_volume.shape[:3]) / 2.0
-    offset = center - np.dot(inverse_rotation_matrix, center)
+        center = np.array(rotated_real_sh_coeffs_volume.shape[:3]) / 2.0
+        offset = center - np.dot(inverse_rotation_matrix, center)
 
-    #bulk_rotated_sh_coeffs_volume = np.zeros_like(complex_coeffs_volume)
+        #bulk_rotated_sh_coeffs_volume = np.zeros_like(complex_coeffs_volume)
 
 
-    # Parallelize the bulk affine transform loop for SH rotation
-    rotated_sh_channels = Parallel(n_jobs=n_jobs, backend="multiprocessing")(
-        delayed(rotate_channel)(
-            channel,
-            rotated_real_sh_coeffs_volume,
-            inverse_rotation_matrix,
-            offset
-        ) for channel in range(rotated_real_sh_coeffs_volume.shape[-1])
-    )
+        # Parallelize the bulk affine transform loop for SH rotation
+        rotated_sh_channels = Parallel(n_jobs=n_jobs, backend="multiprocessing")(
+            delayed(rotate_channel)(
+                channel,
+                rotated_real_sh_coeffs_volume,
+                inverse_rotation_matrix,
+                offset
+            ) for channel in range(rotated_real_sh_coeffs_volume.shape[-1])
+        )
 
-    # Stack the rotated channels to form the rotated SH coefficients volume
-    bulk_rotated_sh_coeffs_volume = np.stack(rotated_sh_channels, axis=-1)
+        # Stack the rotated channels to form the rotated SH coefficients volume
+        bulk_rotated_sh_coeffs_volume = np.stack(rotated_sh_channels, axis=-1)
+    else:
+        bulk_rotated_sh_coeffs_volume = rotated_real_sh_coeffs_volume
 
     # End timing
     end_bulk = time.time()
