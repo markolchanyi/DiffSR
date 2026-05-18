@@ -2,6 +2,8 @@
 
 DiffSR is a PyTorch-based framework for **diffusion tensor imaging/dMRI super-resolution** using **spherical harmonic coefficient volumes**. It supports training and inference l=2 single-shell SH representations of DTI data and is designed for research workflows involving diffusion preprocessing and tractography pipelines for heavily-degraded and/or low-field data.
 
+
+> **Status:** Work-In-Progress!! — Full overview to come soon!
 > **Status:** research code — APIs and configs may change.
 
 ---
